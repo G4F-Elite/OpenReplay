@@ -25,7 +25,7 @@ jobs:
           if ($tag -notmatch '^v(?<version>\d+\.\d+\.\d+)$') { throw "Tag must be vX.Y.Z: $tag" }
           "tag=$tag" >> $env:GITHUB_OUTPUT
           "version=$($Matches.version)" >> $env:GITHUB_OUTPUT
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ steps.version.outputs.tag }}
       - name: Verify source version

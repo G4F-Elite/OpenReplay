@@ -14,7 +14,7 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build and test Release
         shell: powershell
         run: .\scripts\build.ps1 Release
@@ -22,7 +22,7 @@ jobs:
         shell: powershell
         run: .\scripts\package-release.ps1 -SkipBuild
       - name: Upload portable artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: OpenReplay-windows-x64
           path: |

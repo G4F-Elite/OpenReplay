@@ -27,7 +27,7 @@ OpenReplay is a Windows desktop recorder focused on a resilient instant replay b
 
 ## Download
 
-Download the latest Windows x64 portable ZIP from [GitHub Releases](https://github.com/G4F-Elite/OpenReplay/releases/latest), extract it into a writable folder, and run `OpenReplay.App.exe`. OBS Studio is not required.
+Download either the Windows x64 installer or portable ZIP from [GitHub Releases](https://github.com/G4F-Elite/OpenReplay/releases/latest). The per-user installer does not require administrator access and adds Start menu/uninstall entries. For portable use, extract the ZIP into a writable folder and run `OpenReplay.App.exe`. OBS Studio is not required in either mode.
 
 OpenReplay checks signed stable-release metadata in the background by default. A downloaded update is applied only after you choose `Restart to update` and capture is idle. The updater verifies the signed manifest and ZIP SHA-256, keeps the previous installation until the new App and Host pass a health check, and rolls back if startup fails.
 
@@ -39,6 +39,7 @@ Protected Windows surfaces are intentionally not bypassed. They may appear black
 - Windows 10/11 SDK `10.0.26100.0`
 - NuGet restore access for Windows App SDK
 - Internet access on the first build to download the verified OBS 32.1.2 runtime ZIP
+- Internet access to download the pinned Inno Setup 6.7.3 compiler on the first installer build
 
 ```powershell
 .\scripts\build.ps1
@@ -53,7 +54,15 @@ Create the same portable ZIP used by GitHub Releases:
 .\scripts\package-release.ps1
 ```
 
-The public CI workflow builds and tests every pull request and `main` push. Pushing a stable tag matching `Version.h`, for example `v0.1.0`, runs the release workflow and publishes the portable ZIP, checksum, signed update manifest, and signature.
+Create the installer from the portable release stage:
+
+```powershell
+.\scripts\install-inno-setup.ps1
+.\scripts\build-installer.ps1 -SkipPackage
+.\scripts\test-installer.ps1
+```
+
+The public CI workflow builds and tests every pull request and `main` push. Pushing a stable tag matching `Version.h`, for example `v0.1.2`, runs the release workflow and publishes the installer, portable ZIP, checksums, signed update manifest, and signature. Automatic updates continue to use the signed portable payload for both installation modes.
 
 MP4 is the default for broad compatibility, while MKV remains available from Storage settings. Distributable builds must retain the OBS runtime notice and comply with the GPL and the licenses of bundled runtime dependencies.
 

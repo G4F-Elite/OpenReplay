@@ -40,6 +40,15 @@ jobs:
       - name: Package portable release
         shell: powershell
         run: .\scripts\package-release.ps1 -Version '${{ steps.version.outputs.version }}' -SkipBuild
+      - name: Install Inno Setup
+        shell: powershell
+        run: .\scripts\install-inno-setup.ps1
+      - name: Package installer
+        shell: powershell
+        run: .\scripts\build-installer.ps1 -Version '${{ steps.version.outputs.version }}' -SkipPackage
+      - name: Test installer
+        shell: powershell
+        run: .\scripts\test-installer.ps1 -Version '${{ steps.version.outputs.version }}'
       - name: Create signed update metadata
         shell: powershell
         env:
@@ -62,6 +71,8 @@ jobs:
           gh release create '${{ steps.version.outputs.tag }}' `
             ".\artifacts\package\OpenReplay-${{ steps.version.outputs.version }}-win-x64.zip" `
             ".\artifacts\package\OpenReplay-${{ steps.version.outputs.version }}-win-x64.zip.sha256" `
+            ".\artifacts\package\OpenReplay-${{ steps.version.outputs.version }}-win-x64-installer.exe" `
+            ".\artifacts\package\OpenReplay-${{ steps.version.outputs.version }}-win-x64-installer.exe.sha256" `
             ".\artifacts\package\OpenReplay-update.json" `
             ".\artifacts\package\OpenReplay-update.json.sig" `
             --repo '${{ github.repository }}' --verify-tag --generate-notes `

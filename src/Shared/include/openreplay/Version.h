@@ -5,7 +5,7 @@
 namespace openreplay {
 
 inline constexpr std::string_view kProductName{"OpenReplay"};
-inline constexpr std::string_view kVersion{"0.1.1"};
+inline constexpr std::string_view kVersion{"0.1.2"};
 inline constexpr std::string_view kReleaseChannel{"stable"};
 inline constexpr std::string_view kRepositoryUrl{"https://github.com/G4F-Elite/OpenReplay"};
 inline constexpr std::string_view kUpdateManifestUrl{

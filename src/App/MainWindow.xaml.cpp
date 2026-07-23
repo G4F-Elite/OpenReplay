@@ -1081,7 +1081,8 @@ void MainWindow::BuildUi() {
     storage_section.Children().Append(storage_actions);
 
     const auto updates_section = create_section(updates_section_title_, L"UPDATES");
-    update_version_text_ = Text(L"OpenReplay 0.1.0 · Stable", 13, primary_text_brush);
+    update_version_text_ = Text(L"OpenReplay " + openreplay::FromUtf8(openreplay::kVersion) + L" · Stable",
+                                13, primary_text_brush);
     update_version_text_.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
     updates_section.Children().Append(update_version_text_);
     update_status_text_ = Text(L"Updates are checked in the background.", 11.5, secondary_text_brush_);
@@ -3469,7 +3470,7 @@ void MainWindow::ExitApplication() {
         performance_hotkey_registered_ = false;
     }
     performance_overlay_.Shutdown();
-    DestroyWindow(GetWindowHandle());
+    Close();
 }
 
 LRESULT CALLBACK MainWindow::WindowSubclass(HWND window, UINT message, WPARAM wparam, LPARAM lparam,

@@ -1,0 +1,15 @@
+# Build output
+/artifacts/
+/packages/
+**/packages/
+**/obj/
+/.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.nupkg
+
+# Runtime state
+*.log
+*.tmp

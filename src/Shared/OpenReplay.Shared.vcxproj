@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{A1A75F60-4A93-4EA8-916A-EA08F9DE1081}</ProjectGuid>
+    <RootNamespace>OpenReplay.Shared</RootNamespace>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ItemDefinitionGroup>
+    <ClCompile><AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories></ClCompile>
+    <Lib><AdditionalDependencies>bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies></Lib>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="include\openreplay\CaptureStateMachine.h" />
+    <ClInclude Include="include\openreplay\Ipc.h" />
+    <ClInclude Include="include\openreplay\SettingsStore.h" />
+    <ClInclude Include="include\openreplay\Types.h" />
+    <ClInclude Include="include\openreplay\UpdateTypes.h" />
+    <ClInclude Include="include\openreplay\Version.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\CaptureStateMachine.cpp" />
+    <ClCompile Include="src\Ipc.cpp" />
+    <ClCompile Include="src\SettingsStore.cpp" />
+    <ClCompile Include="src\Types.cpp" />
+    <ClCompile Include="src\UpdateTypes.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test Release
+        shell: powershell
+        run: .\scripts\build.ps1 Release
+      - name: Package portable build
+        shell: powershell
+        run: .\scripts\package-release.ps1 -SkipBuild
+      - name: Upload portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenReplay-windows-x64
+          path: |
+            artifacts/package/OpenReplay-*-win-x64.zip
+            artifacts/package/OpenReplay-*-win-x64.zip.sha256
+          if-no-files-found: error
+          retention-days: 14

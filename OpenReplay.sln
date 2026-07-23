@@ -1,0 +1,45 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "OpenReplay.Shared", "src\Shared\OpenReplay.Shared.vcxproj", "{A1A75F60-4A93-4EA8-916A-EA08F9DE1081}"
+EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "OpenReplay.Host", "src\Host\OpenReplay.Host.vcxproj", "{B2B85F71-5BA4-4FB9-A27B-FB190AEF2192}"
+EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "OpenReplay.App", "src\App\OpenReplay.App.vcxproj", "{C3C96F82-6CB5-40CA-B38C-0C2A1BF032A3}"
+EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "OpenReplay.UnitTests", "tests\Unit\OpenReplay.UnitTests.vcxproj", "{D4DA7093-7DC6-41DB-C49D-1D3B2C0143B4}"
+EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "OpenReplay.Updater", "src\Updater\OpenReplay.Updater.vcxproj", "{E5EB81A4-15CB-4E22-8D5A-976B345D71A5}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A1A75F60-4A93-4EA8-916A-EA08F9DE1081}.Debug|x64.ActiveCfg = Debug|x64
+		{A1A75F60-4A93-4EA8-916A-EA08F9DE1081}.Debug|x64.Build.0 = Debug|x64
+		{A1A75F60-4A93-4EA8-916A-EA08F9DE1081}.Release|x64.ActiveCfg = Release|x64
+		{A1A75F60-4A93-4EA8-916A-EA08F9DE1081}.Release|x64.Build.0 = Release|x64
+		{B2B85F71-5BA4-4FB9-A27B-FB190AEF2192}.Debug|x64.ActiveCfg = Debug|x64
+		{B2B85F71-5BA4-4FB9-A27B-FB190AEF2192}.Debug|x64.Build.0 = Debug|x64
+		{B2B85F71-5BA4-4FB9-A27B-FB190AEF2192}.Release|x64.ActiveCfg = Release|x64
+		{B2B85F71-5BA4-4FB9-A27B-FB190AEF2192}.Release|x64.Build.0 = Release|x64
+		{C3C96F82-6CB5-40CA-B38C-0C2A1BF032A3}.Debug|x64.ActiveCfg = Debug|x64
+		{C3C96F82-6CB5-40CA-B38C-0C2A1BF032A3}.Debug|x64.Build.0 = Debug|x64
+		{C3C96F82-6CB5-40CA-B38C-0C2A1BF032A3}.Release|x64.ActiveCfg = Release|x64
+		{C3C96F82-6CB5-40CA-B38C-0C2A1BF032A3}.Release|x64.Build.0 = Release|x64
+		{D4DA7093-7DC6-41DB-C49D-1D3B2C0143B4}.Debug|x64.ActiveCfg = Debug|x64
+		{D4DA7093-7DC6-41DB-C49D-1D3B2C0143B4}.Debug|x64.Build.0 = Debug|x64
+		{D4DA7093-7DC6-41DB-C49D-1D3B2C0143B4}.Release|x64.ActiveCfg = Release|x64
+		{D4DA7093-7DC6-41DB-C49D-1D3B2C0143B4}.Release|x64.Build.0 = Release|x64
+		{E5EB81A4-15CB-4E22-8D5A-976B345D71A5}.Debug|x64.ActiveCfg = Debug|x64
+		{E5EB81A4-15CB-4E22-8D5A-976B345D71A5}.Debug|x64.Build.0 = Debug|x64
+		{E5EB81A4-15CB-4E22-8D5A-976B345D71A5}.Release|x64.ActiveCfg = Release|x64
+		{E5EB81A4-15CB-4E22-8D5A-976B345D71A5}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

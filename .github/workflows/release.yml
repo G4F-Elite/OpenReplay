@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vX.Y.Z tag to release
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - name: Resolve tag
+        id: version
+        shell: powershell
+        run: |
+          $tag = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.tag }}' } else { '${{ github.ref_name }}' }
+          if ($tag -notmatch '^v(?<version>\d+\.\d+\.\d+)$') { throw "Tag must be vX.Y.Z: $tag" }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$($Matches.version)" >> $env:GITHUB_OUTPUT
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.version.outputs.tag }}
+      - name: Verify source version
+        shell: powershell
+        run: |
+          $source = Get-Content .\src\Shared\include\openreplay\Version.h -Raw
+          if ($source -notmatch 'kVersion\{"(?<version>\d+\.\d+\.\d+)"\}') { throw 'Version.h does not contain kVersion.' }
+          if ($Matches.version -ne '${{ steps.version.outputs.version }}') { throw "Tag and Version.h differ." }
+      - name: Build and test Release
+        shell: powershell
+        run: .\scripts\build.ps1 Release
+      - name: Package portable release
+        shell: powershell
+        run: .\scripts\package-release.ps1 -Version '${{ steps.version.outputs.version }}' -SkipBuild
+      - name: Create signed update metadata
+        shell: powershell
+        env:
+          UPDATE_PRIVATE_KEY: ${{ secrets.OPENREPLAY_UPDATE_PRIVATE_KEY }}
+        run: |
+          if (-not $env:UPDATE_PRIVATE_KEY) { throw 'OPENREPLAY_UPDATE_PRIVATE_KEY is not configured.' }
+          .\scripts\create-update-metadata.ps1 `
+            -Version '${{ steps.version.outputs.version }}' `
+            -Archive ".\artifacts\package\OpenReplay-${{ steps.version.outputs.version }}-win-x64.zip" `
+            -PrivateKeyBase64 $env:UPDATE_PRIVATE_KEY
+          .\scripts\verify-update-signature.ps1 `
+            -Manifest ".\artifacts\package\OpenReplay-update.json" `
+            -Signature ".\artifacts\package\OpenReplay-update.json.sig" `
+            -PrivateKeyBase64 $env:UPDATE_PRIVATE_KEY
+      - name: Create GitHub Release
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create '${{ steps.version.outputs.tag }}' `
+            ".\artifacts\package\OpenReplay-${{ steps.version.outputs.version }}-win-x64.zip" `
+            ".\artifacts\package\OpenReplay-${{ steps.version.outputs.version }}-win-x64.zip.sha256" `
+            ".\artifacts\package\OpenReplay-update.json" `
+            ".\artifacts\package\OpenReplay-update.json.sig" `
+            --repo '${{ github.repository }}' --verify-tag --generate-notes `
+            --title "OpenReplay ${{ steps.version.outputs.tag }}"

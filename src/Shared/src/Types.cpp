@@ -81,6 +81,7 @@ void Settings::Normalize() {
         if (hotkey.chord.empty()) hotkey.enabled = false;
     }
     if (screenshot_hotkey_chord.empty()) screenshot_hotkey_enabled = false;
+    if (recording_hotkey_chord.empty()) recording_hotkey_enabled = false;
     performance_overlay_opacity = std::clamp(performance_overlay_opacity, 55U, 100U);
     if (!performance_show_gpu_usage && !performance_show_gpu_temperature && !performance_show_gpu_clock &&
         !performance_show_gpu_memory && !performance_show_cpu_usage && !performance_show_memory) {

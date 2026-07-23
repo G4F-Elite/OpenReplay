@@ -19,7 +19,7 @@ OpenReplay is a Windows desktop recorder focused on a resilient instant replay b
 - Debounced automatic settings saves with background capture updates; duration changes rebuild only replay buffers
 - Separate mixed, desktop, and microphone AAC tracks
 - English-default overlay/settings UI with Russian available in settings
-- Global `Alt+Z` overlay, system-tray controls, configurable replay-duration hotkeys, and a screenshot shortcut
+- Global `Alt+Z` overlay, system-tray controls, configurable recording, replay-duration, and screenshot shortcuts
 - Optional per-user Windows startup that launches OpenReplay directly into the system tray
 - Animated right-side desktop notifications that stay outside the main overlay
 - Configurable `Alt+R` performance overlay with NVIDIA GPU metrics, CPU/RAM, and DXGI VRAM fallback
@@ -27,7 +27,7 @@ OpenReplay is a Windows desktop recorder focused on a resilient instant replay b
 
 ## Download
 
-Download either the Windows x64 installer or portable ZIP from [GitHub Releases](https://github.com/G4F-Elite/OpenReplay/releases/latest). The per-user installer does not require administrator access and adds Start menu/uninstall entries. For portable use, extract the ZIP into a writable folder and run `OpenReplay.App.exe`. OBS Studio is not required in either mode.
+Download either the Windows x64 installer or portable ZIP from the [latest stable release](https://github.com/G4F-Elite/OpenReplay/releases/latest). An automatically refreshed [development prerelease](https://github.com/G4F-Elite/OpenReplay/releases/tag/dev) is also available for testing upcoming changes. The per-user installer does not require administrator access and adds Start menu/uninstall entries. For portable use, extract the ZIP into a writable folder and run `OpenReplay.App.exe`. OBS Studio is not required in either mode.
 
 OpenReplay checks signed stable-release metadata in the background by default. A downloaded update is applied only after you choose `Restart to update` and capture is idle. The updater verifies the signed manifest and ZIP SHA-256, keeps the previous installation until the new App and Host pass a health check, and rolls back if startup fails.
 
@@ -62,7 +62,7 @@ Create the installer from the portable release stage:
 .\scripts\test-installer.ps1
 ```
 
-The public CI workflow builds and tests every pull request and `main` push. Pushing a stable tag matching `Version.h`, for example `v0.1.2`, runs the release workflow and publishes the installer, portable ZIP, checksums, signed update manifest, and signature. Automatic updates continue to use the signed portable payload for both installation modes.
+The public CI workflow builds and tests every pull request and `main` push. After a successful `main` build, the dev-release workflow refreshes the `dev` GitHub prerelease with versioned installer and portable assets. Pushing a stable tag matching `Version.h`, for example `v0.1.3`, runs the stable release workflow and publishes the installer, portable ZIP, checksums, signed update manifest, and signature. Stable automatic updates continue to use only the signed stable portable payload for both installation modes; dev prereleases never replace `releases/latest`.
 
 MP4 is the default for broad compatibility, while MKV remains available from Storage settings. Distributable builds must retain the OBS runtime notice and comply with the GPL and the licenses of bundled runtime dependencies.
 

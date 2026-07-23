@@ -13,8 +13,10 @@ struct SemanticVersion {
     std::uint32_t major{};
     std::uint32_t minor{};
     std::uint32_t patch{};
+    std::string pre_release;
 
-    auto operator<=>(const SemanticVersion&) const = default;
+    std::strong_ordering operator<=>(const SemanticVersion& other) const noexcept;
+    bool operator==(const SemanticVersion&) const = default;
 };
 
 struct UpdateManifest {

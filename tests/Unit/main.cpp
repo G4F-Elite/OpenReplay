@@ -54,6 +54,8 @@ void SettingsRoundTrip() {
     settings.replay_hotkeys = {{true, "Ctrl+F8", 45}, {false, "Alt+F9", 75}, {true, "Ctrl+F12", 120}};
     settings.screenshot_hotkey_enabled = true;
     settings.screenshot_hotkey_chord = "Ctrl+Shift+F12";
+    settings.recording_hotkey_enabled = true;
+    settings.recording_hotkey_chord = "Ctrl+F9";
     store.Save(settings);
     const auto loaded = store.Load();
     Check(!loaded.instant_replay_enabled, "boolean setting did not round-trip");
@@ -78,6 +80,8 @@ void SettingsRoundTrip() {
           "dynamic replay hotkey count did not round-trip");
     Check(loaded.screenshot_hotkey_enabled && loaded.screenshot_hotkey_chord == "Ctrl+Shift+F12",
           "screenshot hotkey did not round-trip");
+    Check(loaded.recording_hotkey_enabled && loaded.recording_hotkey_chord == "Ctrl+F9",
+          "recording hotkey did not round-trip");
     std::filesystem::remove(path);
 }
 
@@ -87,15 +91,22 @@ void DefaultSettingsUseEnglishAndMp4() {
     Check(settings.output_format == openreplay::OutputFormat::Mp4, "MP4 was not the default output format");
     Check(settings.screenshot_hotkey_enabled && settings.screenshot_hotkey_chord == "Ctrl+F12",
            "screenshot hotkey defaults were not applied");
+    Check(settings.recording_hotkey_enabled && settings.recording_hotkey_chord == "Ctrl+F9",
+          "recording hotkey defaults were not applied");
     Check(settings.automatic_updates, "automatic updates were not enabled by default");
 }
 
 void UpdateMetadataParsesAndComparesVersions() {
     const auto current = openreplay::ParseSemanticVersion(openreplay::kVersion);
     const auto newer = openreplay::ParseSemanticVersion("v0.2.0");
+    const auto prerelease = openreplay::ParseSemanticVersion("0.2.0-dev.10");
+    const auto older_prerelease = openreplay::ParseSemanticVersion("0.2.0-dev.9");
     Check(current && newer && *newer > *current, "semantic versions were not compared correctly");
+    Check(prerelease && older_prerelease && *prerelease > *older_prerelease && *newer > *prerelease,
+          "prerelease semantic versions were not compared correctly");
     Check(!openreplay::ParseSemanticVersion("0.2"), "incomplete semantic version was accepted");
-    Check(!openreplay::ParseSemanticVersion("0.2.0-beta"), "prerelease version was accepted as stable");
+    Check(!openreplay::ParseSemanticVersion("0.2.0-dev..1"), "invalid prerelease version was accepted");
+    Check(!openreplay::ParseSemanticVersion("0.2.0-dev.01"), "prerelease leading zero was accepted");
 
     const auto manifest = openreplay::ParseUpdateManifest(R"({
         "schema": 1,
@@ -165,6 +176,7 @@ void SettingsChangeClassification() {
     changed.language = "ru-RU";
     changed.replay_hotkeys.front().chord = "Ctrl+F8";
     changed.screenshot_hotkey_chord = "Ctrl+Shift+F12";
+    changed.recording_hotkey_chord = "Ctrl+Shift+F9";
     Check(openreplay::CapturePipelineSettingsEqual(current, changed),
           "app-only or chord-only changes required a capture pipeline reload");
     Check(openreplay::ReplayOutputSettingsEqual(current, changed),
@@ -288,6 +300,14 @@ void ScreenshotHotkeyNormalizes() {
     Check(!settings.screenshot_hotkey_enabled, "empty screenshot hotkey remained enabled");
 }
 
+void RecordingHotkeyNormalizes() {
+    openreplay::Settings settings;
+    settings.recording_hotkey_enabled = true;
+    settings.recording_hotkey_chord.clear();
+    settings.Normalize();
+    Check(!settings.recording_hotkey_enabled, "empty recording hotkey remained enabled");
+}
+
 void PerformanceOverlaySettingsNormalize() {
     openreplay::Settings settings;
     settings.performance_show_gpu_usage = false;
@@ -342,6 +362,7 @@ int wmain() {
         AudioDevicesReconcileByNameAndDefault();
         ReplayHotkeysNormalizeToLimit();
         ScreenshotHotkeyNormalizes();
+        RecordingHotkeyNormalizes();
         PerformanceOverlaySettingsNormalize();
         QualityPresetsApplyEncoderLevels();
         ReplaySizeEstimateIncludesEncodedAudioAndOverhead();

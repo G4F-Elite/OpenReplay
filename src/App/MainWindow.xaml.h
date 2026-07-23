@@ -39,6 +39,7 @@ struct MainWindow : MainWindowT<MainWindow> {
     void AudioDeviceSelection_Changed(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void ReplayHotkey_KeyDown(IInspectable const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args);
     void ScreenshotHotkey_KeyDown(IInspectable const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args);
+    void RecordingHotkey_KeyDown(IInspectable const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args);
     void ReplayHotkeyAdd_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void ReplayHotkeyRemove_Click(IInspectable const& sender, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void OpenFolder_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
@@ -87,6 +88,7 @@ private:
     static constexpr int kOverlayHotkey = 0x4F52;
     static constexpr int kPerformanceOverlayHotkey = 0x4F53;
     static constexpr int kScreenshotHotkey = 0x4F54;
+    static constexpr int kRecordingHotkey = 0x4F55;
     static constexpr int kReplayHotkeyBase = 0x4F60;
     static constexpr UINT kTrayMessage = WM_APP + 42;
     static constexpr UINT kTrayOpen = 2001;
@@ -225,6 +227,7 @@ private:
     bool hotkey_registered_{false};
     bool performance_hotkey_registered_{false};
     bool screenshot_hotkey_registered_{false};
+    bool recording_hotkey_registered_{false};
     bool visible_{false};
     bool settings_visible_{false};
     bool updating_ui_{false};
@@ -356,6 +359,10 @@ private:
     Microsoft::UI::Xaml::Controls::TextBlock screenshot_hotkey_validation_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBox screenshot_hotkey_input_{nullptr};
     Microsoft::UI::Xaml::Controls::ToggleSwitch screenshot_hotkey_toggle_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock recording_hotkey_label_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock recording_hotkey_validation_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBox recording_hotkey_input_{nullptr};
+    Microsoft::UI::Xaml::Controls::ToggleSwitch recording_hotkey_toggle_{nullptr};
     Microsoft::UI::Xaml::Controls::Expander performance_overlay_expander_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock performance_overlay_label_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock performance_overlay_summary_{nullptr};

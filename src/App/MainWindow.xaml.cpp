@@ -109,6 +109,24 @@ void StyleInput(winrt::Microsoft::UI::Xaml::Controls::Control const& control) {
     control.CornerRadius(winrt::Microsoft::UI::Xaml::CornerRadius{8, 8, 8, 8});
 }
 
+void StyleSlider(
+    winrt::Microsoft::UI::Xaml::Controls::Slider const& slider,
+    winrt::Microsoft::UI::Xaml::Media::Brush const& accent,
+    winrt::Microsoft::UI::Xaml::Media::Brush const& accent_hover,
+    winrt::Microsoft::UI::Xaml::Media::Brush const& accent_pressed) {
+    const auto transparent = Brush(0x00000000);
+    SetResource(slider, L"SliderTrackFill", transparent);
+    SetResource(slider, L"SliderTrackFillPointerOver", transparent);
+    SetResource(slider, L"SliderTrackFillPressed", transparent);
+    SetResource(slider, L"SliderTrackFillDisabled", transparent);
+    SetResource(slider, L"SliderTrackValueFill", accent);
+    SetResource(slider, L"SliderTrackValueFillPointerOver", accent_hover);
+    SetResource(slider, L"SliderTrackValueFillPressed", accent_pressed);
+    SetResource(slider, L"SliderThumbBackground", accent);
+    SetResource(slider, L"SliderThumbBackgroundPointerOver", accent_hover);
+    SetResource(slider, L"SliderThumbBackgroundPressed", accent_pressed);
+}
+
 void StyleToggle(
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch const& toggle,
     winrt::Microsoft::UI::Xaml::Media::Brush const& accent,
@@ -696,11 +714,13 @@ void MainWindow::BuildUi() {
         devices = StackPanel{};
         devices.Spacing(8);
         devices.Padding(Thickness{4, 6, 0, 8});
+        devices.HorizontalAlignment(HorizontalAlignment::Stretch);
         expander = Expander{};
         expander.Header(header);
         expander.Content(devices);
         expander.IsExpanded(false);
         expander.HorizontalAlignment(HorizontalAlignment::Stretch);
+        expander.HorizontalContentAlignment(HorizontalAlignment::Stretch);
         expander.Margin(Thickness{0, 0, 0, 8});
         source_section.Children().Append(expander);
     };
@@ -727,12 +747,7 @@ void MainWindow::BuildUi() {
     duration_header.Children().Append(replay_duration_value_);
     video_section.Children().Append(duration_header);
     replay_duration_slider_ = Slider{};
-    SetResource(replay_duration_slider_, L"SliderTrackValueFill", accent_brush_);
-    SetResource(replay_duration_slider_, L"SliderTrackValueFillPointerOver", success_brush_);
-    SetResource(replay_duration_slider_, L"SliderTrackValueFillPressed", accent_dark_brush);
-    SetResource(replay_duration_slider_, L"SliderThumbBackground", accent_brush_);
-    SetResource(replay_duration_slider_, L"SliderThumbBackgroundPointerOver", success_brush_);
-    SetResource(replay_duration_slider_, L"SliderThumbBackgroundPressed", accent_dark_brush);
+    StyleSlider(replay_duration_slider_, accent_brush_, success_brush_, accent_dark_brush);
     replay_duration_slider_.Minimum(15);
     replay_duration_slider_.Maximum(1200);
     replay_duration_slider_.StepFrequency(15);
@@ -767,12 +782,7 @@ void MainWindow::BuildUi() {
     video_section.Children().Append(bitrate_header);
 
     bitrate_slider_ = Slider{};
-    SetResource(bitrate_slider_, L"SliderTrackValueFill", accent_brush_);
-    SetResource(bitrate_slider_, L"SliderTrackValueFillPointerOver", success_brush_);
-    SetResource(bitrate_slider_, L"SliderTrackValueFillPressed", accent_dark_brush);
-    SetResource(bitrate_slider_, L"SliderThumbBackground", accent_brush_);
-    SetResource(bitrate_slider_, L"SliderThumbBackgroundPointerOver", success_brush_);
-    SetResource(bitrate_slider_, L"SliderThumbBackgroundPressed", accent_dark_brush);
+    StyleSlider(bitrate_slider_, accent_brush_, success_brush_, accent_dark_brush);
     bitrate_slider_.Minimum(4);
     bitrate_slider_.Maximum(120);
     bitrate_slider_.StepFrequency(1);
@@ -878,6 +888,7 @@ void MainWindow::BuildUi() {
     StackPanel shortcuts_content;
     shortcuts_content.Spacing(8);
     shortcuts_content.Padding(Thickness{4, 6, 0, 8});
+    shortcuts_content.HorizontalAlignment(HorizontalAlignment::Stretch);
     replay_hotkeys_panel_ = StackPanel{};
     replay_hotkeys_panel_.Spacing(8);
     shortcuts_content.Children().Append(replay_hotkeys_panel_);
@@ -886,6 +897,50 @@ void MainWindow::BuildUi() {
     replay_hotkey_add_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
     replay_hotkey_add_button_.Click({this, &MainWindow::ReplayHotkeyAdd_Click});
     shortcuts_content.Children().Append(replay_hotkey_add_button_);
+
+    Border recording_shortcut_surface;
+    recording_shortcut_surface.Background(Brush(0xFF202023));
+    recording_shortcut_surface.BorderBrush(card_border_brush);
+    recording_shortcut_surface.BorderThickness(Thickness{1, 1, 1, 1});
+    recording_shortcut_surface.CornerRadius(CornerRadius{8, 8, 8, 8});
+    recording_shortcut_surface.Padding(Thickness{10, 9, 10, 9});
+    StackPanel recording_shortcut_block;
+    recording_shortcut_block.Spacing(6);
+    Grid recording_shortcut_header;
+    AddColumn(recording_shortcut_header, 1, GridUnitType::Star);
+    AddColumn(recording_shortcut_header, 0, GridUnitType::Auto);
+    recording_hotkey_label_ = Text(L"Запись сессии", 12.5, primary_text_brush);
+    recording_hotkey_label_.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
+    recording_hotkey_label_.VerticalAlignment(VerticalAlignment::Center);
+    recording_shortcut_header.Children().Append(recording_hotkey_label_);
+    recording_hotkey_toggle_ = ToggleSwitch{};
+    StyleToggle(recording_hotkey_toggle_, accent_brush_, success_brush_, accent_dark_brush,
+                primary_text_brush, quiet_button_brush, muted_brush);
+    recording_hotkey_toggle_.Toggled([this](auto&&, auto&&) {
+        if (updating_ui_) return;
+        ValidateHotkeys(true, false);
+        ScheduleSettingsApply();
+    });
+    Grid::SetColumn(recording_hotkey_toggle_, 1);
+    recording_shortcut_header.Children().Append(recording_hotkey_toggle_);
+    recording_shortcut_block.Children().Append(recording_shortcut_header);
+    recording_hotkey_input_ = TextBox{};
+    StyleInput(recording_hotkey_input_);
+    recording_hotkey_input_.Height(36);
+    recording_hotkey_input_.IsReadOnly(true);
+    recording_hotkey_input_.PlaceholderText(L"Нажмите сочетание");
+    recording_hotkey_input_.KeyDown({this, &MainWindow::RecordingHotkey_KeyDown});
+    recording_hotkey_input_.LostFocus([this](auto&&, auto&&) {
+        ValidateHotkeys(true, false);
+        ScheduleSettingsApply();
+    });
+    recording_shortcut_block.Children().Append(recording_hotkey_input_);
+    recording_hotkey_validation_ = Text(L"", 10.5, danger_brush_);
+    recording_hotkey_validation_.TextWrapping(TextWrapping::Wrap);
+    recording_hotkey_validation_.Visibility(Visibility::Collapsed);
+    recording_shortcut_block.Children().Append(recording_hotkey_validation_);
+    recording_shortcut_surface.Child(recording_shortcut_block);
+    shortcuts_content.Children().Append(recording_shortcut_surface);
 
     Border screenshot_surface;
     screenshot_surface.Background(Brush(0xFF202023));
@@ -936,6 +991,7 @@ void MainWindow::BuildUi() {
     shortcuts_expander_.Content(shortcuts_content);
     shortcuts_expander_.IsExpanded(false);
     shortcuts_expander_.HorizontalAlignment(HorizontalAlignment::Stretch);
+    shortcuts_expander_.HorizontalContentAlignment(HorizontalAlignment::Stretch);
     shortcuts_expander_.Margin(Thickness{0, 4, 0, 0});
     input_section.Children().Append(shortcuts_expander_);
 
@@ -954,6 +1010,7 @@ void MainWindow::BuildUi() {
     StackPanel performance_content;
     performance_content.Spacing(8);
     performance_content.Padding(Thickness{4, 6, 0, 8});
+    performance_content.HorizontalAlignment(HorizontalAlignment::Stretch);
     Grid position_row;
     AddColumn(position_row, 1, GridUnitType::Star);
     AddColumn(position_row, 160, GridUnitType::Pixel);
@@ -984,9 +1041,8 @@ void MainWindow::BuildUi() {
     performance_opacity_slider_.Maximum(100);
     performance_opacity_slider_.StepFrequency(1);
     performance_opacity_slider_.Value(92);
-    performance_opacity_slider_.Margin(Thickness{0, -4, 0, 2});
-    SetResource(performance_opacity_slider_, L"SliderTrackValueFill", accent_brush_);
-    SetResource(performance_opacity_slider_, L"SliderThumbBackground", accent_brush_);
+    performance_opacity_slider_.Margin(Thickness{0, 0, 0, 2});
+    StyleSlider(performance_opacity_slider_, accent_brush_, success_brush_, accent_dark_brush);
     performance_opacity_slider_.ValueChanged([this](auto&&, auto const& args) {
         if (performance_opacity_value_) {
             performance_opacity_value_.Text(std::to_wstring(static_cast<unsigned int>(std::lround(args.NewValue()))) + L"%");
@@ -1030,6 +1086,7 @@ void MainWindow::BuildUi() {
     performance_overlay_expander_.Content(performance_content);
     performance_overlay_expander_.IsExpanded(false);
     performance_overlay_expander_.HorizontalAlignment(HorizontalAlignment::Stretch);
+    performance_overlay_expander_.HorizontalContentAlignment(HorizontalAlignment::Stretch);
     performance_overlay_expander_.Margin(Thickness{0, 8, 0, 0});
     input_section.Children().Append(performance_overlay_expander_);
 
@@ -1081,7 +1138,8 @@ void MainWindow::BuildUi() {
     storage_section.Children().Append(storage_actions);
 
     const auto updates_section = create_section(updates_section_title_, L"UPDATES");
-    update_version_text_ = Text(L"OpenReplay " + openreplay::FromUtf8(openreplay::kVersion) + L" · Stable",
+    update_version_text_ = Text(L"OpenReplay " + openreplay::FromUtf8(openreplay::kVersion) +
+                                    (openreplay::kReleaseChannel == "dev" ? L" · Dev" : L" · Stable"),
                                 13, primary_text_brush);
     update_version_text_.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
     updates_section.Children().Append(update_version_text_);
@@ -1204,6 +1262,10 @@ void MainWindow::UnregisterConfigurableHotkeys() noexcept {
         UnregisterHotKey(window_handle_, kScreenshotHotkey);
         screenshot_hotkey_registered_ = false;
     }
+    if (recording_hotkey_registered_) {
+        UnregisterHotKey(window_handle_, kRecordingHotkey);
+        recording_hotkey_registered_ = false;
+    }
 }
 
 void MainWindow::RegisterConfigurableHotkeys() {
@@ -1236,10 +1298,24 @@ void MainWindow::RegisterConfigurableHotkeys() {
             }
         }
     }
+    if (settings_.recording_hotkey_enabled) {
+        const auto hotkey = ParseHotkey(settings_.recording_hotkey_chord);
+        if (hotkey.key) {
+            recording_hotkey_registered_ = RegisterHotKey(
+                GetWindowHandle(), kRecordingHotkey, hotkey.modifiers | MOD_NOREPEAT, hotkey.key) != FALSE;
+            if (!recording_hotkey_registered_) {
+                ShowNotification((english_ ? std::wstring{L"Recording shortcut is already in use: "}
+                                           : std::wstring{L"Хоткей записи уже используется: "}) +
+                                     openreplay::FromUtf8(settings_.recording_hotkey_chord),
+                                 true);
+            }
+        }
+    }
     if (shortcuts_summary_) {
         const auto active = std::ranges::count_if(settings_.replay_hotkeys, [](const auto& hotkey) {
             return hotkey.enabled;
-        }) + (settings_.screenshot_hotkey_enabled ? 1 : 0);
+        }) + (settings_.screenshot_hotkey_enabled ? 1 : 0) +
+             (settings_.recording_hotkey_enabled ? 1 : 0);
         shortcuts_summary_.Text(std::to_wstring(active) +
             (english_ ? L" active" : (active == 1 ? L" активно" : L" активны")));
     }
@@ -1434,9 +1510,40 @@ bool MainWindow::ValidateHotkeys(bool check_system_conflicts, bool show_notifica
     }
     valid = valid && screenshot_error.empty();
 
+    std::wstring recording_error;
+    const auto recording_enabled = recording_hotkey_toggle_ && recording_hotkey_toggle_.IsOn();
+    const auto recording_chord = recording_hotkey_input_
+        ? openreplay::ToUtf8(recording_hotkey_input_.Text().c_str()) : std::string{};
+    if (recording_enabled && ParseHotkey(recording_chord).key == 0) {
+        recording_error = english_ ? L"Choose a valid shortcut" : L"Задайте корректное сочетание";
+    } else if (recording_enabled) {
+        std::string normalized = recording_chord;
+        for (auto& character : normalized) {
+            character = static_cast<char>(std::toupper(static_cast<unsigned char>(character)));
+        }
+        if (!chords.emplace(std::move(normalized)).second) {
+            recording_error = english_ ? L"Already assigned to another shortcut"
+                                       : L"Уже назначено другому хоткею";
+        }
+        const auto native = ParseHotkey(recording_chord);
+        if (recording_error.empty() && fixed_conflict(native)) {
+            recording_error = english_ ? L"Conflicts with an OpenReplay overlay shortcut"
+                                       : L"Конфликтует с хоткеем оверлея OpenReplay";
+        }
+    }
+    if (recording_hotkey_validation_) {
+        recording_hotkey_validation_.Text(recording_error);
+        recording_hotkey_validation_.Visibility(
+            recording_error.empty() ? Visibility::Collapsed : Visibility::Visible);
+        recording_hotkey_input_.BorderBrush(recording_error.empty() ? Brush(0xFF3F3F46) : danger_brush_);
+    }
+    valid = valid && recording_error.empty();
+
     const auto registrations_changed = bindings != settings_.replay_hotkeys ||
         screenshot_enabled != settings_.screenshot_hotkey_enabled ||
-        screenshot_chord != settings_.screenshot_hotkey_chord;
+        screenshot_chord != settings_.screenshot_hotkey_chord ||
+        recording_enabled != settings_.recording_hotkey_enabled ||
+        recording_chord != settings_.recording_hotkey_chord;
     if (valid && check_system_conflicts && registrations_changed) {
         UnregisterConfigurableHotkeys();
         std::vector<int> temporary_ids;
@@ -1462,6 +1569,19 @@ bool MainWindow::ValidateHotkeys(bool check_system_conflicts, bool show_notifica
                                                              : L"Занято Windows или другой программой");
                 screenshot_hotkey_validation_.Visibility(Visibility::Visible);
                 screenshot_hotkey_input_.BorderBrush(danger_brush_);
+                valid = false;
+            } else {
+                temporary_ids.push_back(id);
+            }
+        }
+        if (recording_enabled) {
+            const auto native = ParseHotkey(recording_chord);
+            const auto id = kRecordingHotkey + 0x100;
+            if (!RegisterHotKey(GetWindowHandle(), id, native.modifiers | MOD_NOREPEAT, native.key)) {
+                recording_hotkey_validation_.Text(english_ ? L"Used by Windows or another app"
+                                                           : L"Занято Windows или другой программой");
+                recording_hotkey_validation_.Visibility(Visibility::Visible);
+                recording_hotkey_input_.BorderBrush(danger_brush_);
                 valid = false;
             } else {
                 temporary_ids.push_back(id);
@@ -1629,6 +1749,8 @@ void MainWindow::LoadSettingsIntoControls() {
     EnumerateAudioDevices();
     screenshot_hotkey_toggle_.IsOn(settings_.screenshot_hotkey_enabled);
     screenshot_hotkey_input_.Text(openreplay::FromUtf8(settings_.screenshot_hotkey_chord));
+    recording_hotkey_toggle_.IsOn(settings_.recording_hotkey_enabled);
+    recording_hotkey_input_.Text(openreplay::FromUtf8(settings_.recording_hotkey_chord));
     replay_hotkey_draft_ = settings_.replay_hotkeys;
     RebuildReplayHotkeyRows();
     if (audio_settings_reconciled_) {
@@ -1764,8 +1886,10 @@ void MainWindow::EnumerateAudioDevices() {
             volume.Maximum(100);
             volume.StepFrequency(1);
             volume.Value(configured ? configured->volume_percent : 100);
-            volume.Height(24);
+            volume.MinHeight(32);
+            volume.VerticalAlignment(VerticalAlignment::Center);
             volume.IsEnabled(configured != nullptr);
+            StyleSlider(volume, accent_brush_, success_brush_, Brush(0xFF007F45));
             Grid::SetColumn(volume, 2);
             controls.Children().Append(volume);
             auto value = Text(std::to_wstring(static_cast<std::uint32_t>(std::lround(volume.Value()))) + L"%",
@@ -1903,6 +2027,8 @@ void MainWindow::ApplyLanguage() {
     set(automatic_updates_label_, english_ ? L"Check and download automatically"
                                            : L"Проверять и скачивать автоматически");
     set(shortcuts_label_, english_ ? L"Shortcuts" : L"Хоткеи");
+    set(recording_hotkey_label_, english_ ? L"Session recording" : L"Запись сессии");
+    recording_hotkey_input_.PlaceholderText(english_ ? L"Press shortcut" : L"Нажмите сочетание");
     set(screenshot_hotkey_label_, english_ ? L"Screenshot" : L"Снимок экрана");
     screenshot_hotkey_input_.PlaceholderText(english_ ? L"Press shortcut" : L"Нажмите сочетание");
     set(performance_overlay_label_, english_ ? L"Performance overlay" : L"Оверлей производительности");
@@ -1928,7 +2054,7 @@ void MainWindow::ApplyLanguage() {
     replay_hotkey_add_button_.Content(winrt::box_value(english_ ? L"+ Add replay shortcut" : L"+ Добавить хоткей"));
     const auto shortcut_count = std::ranges::count_if(replay_hotkey_toggles_, [](const auto& toggle) {
         return toggle.IsOn();
-    }) + (screenshot_hotkey_toggle_.IsOn() ? 1 : 0);
+    }) + (screenshot_hotkey_toggle_.IsOn() ? 1 : 0) + (recording_hotkey_toggle_.IsOn() ? 1 : 0);
     set(shortcuts_summary_, std::to_wstring(shortcut_count) +
         (english_ ? L" active" : (shortcut_count == 1 ? L" активно" : L" активны")));
     set(HintText(), english_ ? L"ALT + Z   CLOSE PANEL" : L"ALT + Z   ЗАКРЫТЬ ПАНЕЛЬ");
@@ -2132,7 +2258,9 @@ void MainWindow::PollStatus() {
 void MainWindow::UpdateUpdateUi() {
     if (!update_version_text_ || !update_status_text_ || !update_action_button_) return;
     update_version_text_.Text(L"OpenReplay " + openreplay::FromUtf8(openreplay::kVersion) +
-                              (english_ ? L" · Stable" : L" · Стабильный канал"));
+                               (openreplay::kReleaseChannel == "dev"
+                                    ? (english_ ? L" · Dev" : L" · Dev-канал")
+                                    : (english_ ? L" · Stable" : L" · Стабильный канал")));
     check_update_button_.IsEnabled(!update_check_in_flight_ && !update_download_in_flight_);
     if (update_download_in_flight_) {
         update_status_text_.Text(english_ ? L"Downloading and verifying update..."
@@ -3051,6 +3179,16 @@ void MainWindow::ScreenshotHotkey_KeyDown(
     args.Handled(true);
 }
 
+void MainWindow::RecordingHotkey_KeyDown(
+    IInspectable const& sender, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args) {
+    const auto chord = HotkeyText(static_cast<UINT>(args.Key()));
+    if (chord.empty()) return;
+    sender.as<Microsoft::UI::Xaml::Controls::TextBox>().Text(openreplay::FromUtf8(chord));
+    ValidateHotkeys(true, false);
+    ScheduleSettingsApply();
+    args.Handled(true);
+}
+
 void MainWindow::ReplayHotkeyAdd_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&) {
     replay_hotkey_draft_ = ReplayHotkeysFromControls();
     if (replay_hotkey_draft_.size() >= 8) return;
@@ -3177,6 +3315,8 @@ bool MainWindow::ReadSettingsFromControls(openreplay::Settings& draft, bool show
     draft.replay_hotkeys = ReplayHotkeysFromControls();
     draft.screenshot_hotkey_enabled = screenshot_hotkey_toggle_.IsOn();
     draft.screenshot_hotkey_chord = openreplay::ToUtf8(screenshot_hotkey_input_.Text().c_str());
+    draft.recording_hotkey_enabled = recording_hotkey_toggle_.IsOn();
+    draft.recording_hotkey_chord = openreplay::ToUtf8(recording_hotkey_input_.Text().c_str());
     draft.Normalize();
     return true;
 }
@@ -3486,6 +3626,10 @@ LRESULT CALLBACK MainWindow::WindowSubclass(HWND window, UINT message, WPARAM wp
     }
     if (message == WM_HOTKEY && wparam == kScreenshotHotkey) {
         self->TakeScreenshot();
+        return 0;
+    }
+    if (message == WM_HOTKEY && wparam == kRecordingHotkey) {
+        self->ToggleRecording();
         return 0;
     }
     if (message == WM_HOTKEY && wparam >= kReplayHotkeyBase &&

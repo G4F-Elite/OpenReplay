@@ -115,6 +115,10 @@ Settings SettingsStore::Load() const {
         values, "screenshot_hotkey_enabled", result.screenshot_hotkey_enabled);
     result.screenshot_hotkey_chord = ParseString(
         values, "screenshot_hotkey_chord", result.screenshot_hotkey_chord);
+    result.recording_hotkey_enabled = ParseBool(
+        values, "recording_hotkey_enabled", result.recording_hotkey_enabled);
+    result.recording_hotkey_chord = ParseString(
+        values, "recording_hotkey_chord", result.recording_hotkey_chord);
     result.encoder = ParseEncoderVendor(ParseString(values, "encoder", "auto"));
     result.codec = ParseVideoCodec(ParseString(values, "codec", "h264"));
     result.quality_preset = ParseQualityPreset(ParseString(values, "quality_preset", "balanced"));
@@ -151,7 +155,7 @@ void SettingsStore::Save(const Settings& input) const {
     {
         std::ofstream output(temporary, std::ios::trunc);
         if (!output) throw std::runtime_error("Unable to open temporary settings file");
-        output << "version=7\n"
+        output << "version=8\n"
                << "instant_replay_enabled=" << (settings.instant_replay_enabled ? "true" : "false") << '\n'
                << "start_with_windows=" << (settings.start_with_windows ? "true" : "false") << '\n'
                << "automatic_updates=" << (settings.automatic_updates ? "true" : "false") << '\n'
@@ -187,6 +191,8 @@ void SettingsStore::Save(const Settings& input) const {
         }
         output << "screenshot_hotkey_enabled=" << (settings.screenshot_hotkey_enabled ? "true" : "false") << '\n'
                << "screenshot_hotkey_chord=" << PercentEncode(settings.screenshot_hotkey_chord) << '\n'
+               << "recording_hotkey_enabled=" << (settings.recording_hotkey_enabled ? "true" : "false") << '\n'
+               << "recording_hotkey_chord=" << PercentEncode(settings.recording_hotkey_chord) << '\n'
                << "encoder=" << ToString(settings.encoder) << '\n'
                << "codec=" << ToString(settings.codec) << '\n'
                << "quality_preset=" << ToString(settings.quality_preset) << '\n'

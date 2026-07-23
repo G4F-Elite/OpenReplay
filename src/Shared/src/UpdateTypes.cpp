@@ -5,6 +5,7 @@
 #include <Windows.h>
 #include <bcrypt.h>
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cctype>
@@ -77,11 +78,91 @@ bool IsLowerHex(std::string_view value) noexcept {
     return true;
 }
 
+std::strong_ordering ComparePreRelease(std::string_view left, std::string_view right) noexcept {
+    if (left.empty() || right.empty()) {
+        if (left.empty() == right.empty()) return std::strong_ordering::equal;
+        return left.empty() ? std::strong_ordering::greater : std::strong_ordering::less;
+    }
+    while (!left.empty() || !right.empty()) {
+        if (left.empty()) return std::strong_ordering::less;
+        if (right.empty()) return std::strong_ordering::greater;
+        const auto left_separator = left.find('.');
+        const auto right_separator = right.find('.');
+        const auto left_part = left.substr(0, left_separator);
+        const auto right_part = right.substr(0, right_separator);
+        const auto numeric = [](std::string_view value) {
+            return !value.empty() && std::ranges::all_of(value, [](char character) {
+                return std::isdigit(static_cast<unsigned char>(character));
+            });
+        };
+        const bool left_numeric = numeric(left_part);
+        const bool right_numeric = numeric(right_part);
+        if (left_numeric && right_numeric) {
+            if (left_part.size() != right_part.size()) {
+                return left_part.size() < right_part.size()
+                    ? std::strong_ordering::less : std::strong_ordering::greater;
+            }
+            if (const auto comparison = left_part <=> right_part; comparison != 0) return comparison;
+        } else if (left_numeric != right_numeric) {
+            return left_numeric ? std::strong_ordering::less : std::strong_ordering::greater;
+        } else if (const auto comparison = left_part <=> right_part; comparison != 0) {
+            return comparison;
+        }
+        if (left_separator == std::string_view::npos) left = {};
+        else left.remove_prefix(left_separator + 1);
+        if (right_separator == std::string_view::npos) right = {};
+        else right.remove_prefix(right_separator + 1);
+    }
+    return std::strong_ordering::equal;
+}
+
 }  // namespace
+
+std::strong_ordering SemanticVersion::operator<=>(const SemanticVersion& other) const noexcept {
+    if (const auto comparison = major <=> other.major; comparison != 0) return comparison;
+    if (const auto comparison = minor <=> other.minor; comparison != 0) return comparison;
+    if (const auto comparison = patch <=> other.patch; comparison != 0) return comparison;
+    return ComparePreRelease(pre_release, other.pre_release);
+}
 
 std::optional<SemanticVersion> ParseSemanticVersion(std::string_view value) noexcept {
     if (value.starts_with('v')) value.remove_prefix(1);
+    const auto build_separator = value.find('+');
+    if (build_separator != std::string_view::npos) {
+        if (build_separator + 1 == value.size()) return std::nullopt;
+        value = value.substr(0, build_separator);
+    }
     SemanticVersion result;
+    const auto pre_release_separator = value.find('-');
+    if (pre_release_separator != std::string_view::npos) {
+        const auto pre_release = value.substr(pre_release_separator + 1);
+        if (pre_release.empty()) return std::nullopt;
+        bool previous_dot = true;
+        for (const char character : pre_release) {
+            if (character == '.') {
+                if (previous_dot) return std::nullopt;
+                previous_dot = true;
+            } else if (std::isalnum(static_cast<unsigned char>(character)) || character == '-') {
+                previous_dot = false;
+            } else {
+                return std::nullopt;
+            }
+        }
+        if (previous_dot) return std::nullopt;
+        auto identifiers = pre_release;
+        while (!identifiers.empty()) {
+            const auto separator = identifiers.find('.');
+            const auto identifier = identifiers.substr(0, separator);
+            const bool numeric = std::ranges::all_of(identifier, [](char character) {
+                return std::isdigit(static_cast<unsigned char>(character));
+            });
+            if (numeric && identifier.size() > 1 && identifier.front() == '0') return std::nullopt;
+            if (separator == std::string_view::npos) break;
+            identifiers.remove_prefix(separator + 1);
+        }
+        result.pre_release = std::string{pre_release};
+        value = value.substr(0, pre_release_separator);
+    }
     std::uint32_t* parts[] = {&result.major, &result.minor, &result.patch};
     for (std::size_t index = 0; index < 3; ++index) {
         const auto separator = value.find('.');

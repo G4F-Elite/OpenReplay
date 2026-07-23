@@ -53,6 +53,8 @@ struct Settings {
     };
     bool screenshot_hotkey_enabled{true};
     std::string screenshot_hotkey_chord{"Ctrl+F12"};
+    bool recording_hotkey_enabled{true};
+    std::string recording_hotkey_chord{"Ctrl+F9"};
     EncoderVendor encoder{EncoderVendor::Auto};
     VideoCodec codec{VideoCodec::H264};
     QualityPreset quality_preset{QualityPreset::Balanced};

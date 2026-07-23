@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repository = (Resolve-Path "$PSScriptRoot\..").Path
 $versionText = Get-Content -LiteralPath (Join-Path $repository 'src\Shared\include\openreplay\Version.h') -Raw
-$match = [regex]::Match($versionText, 'kVersion\{"(?<version>\d+\.\d+\.\d+)"\}')
+$match = [regex]::Match($versionText, 'kVersion\{"(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)"\}')
 if (-not $match.Success) { throw 'Unable to read kVersion from Version.h.' }
 $sourceVersion = $match.Groups['version'].Value
 if (-not $Version) { $Version = $sourceVersion }

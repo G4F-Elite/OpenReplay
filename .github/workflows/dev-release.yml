@@ -1,0 +1,82 @@
+name: Dev Release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dev-release
+  cancel-in-progress: false
+
+jobs:
+  dev-release:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || 'main' }}
+          fetch-depth: 0
+      - name: Resolve dev version
+        id: version
+        shell: powershell
+        run: |
+          $header = '.\src\Shared\include\openreplay\Version.h'
+          $source = Get-Content -LiteralPath $header -Raw
+          if ($source -notmatch 'kVersion\{"(?<version>\d+\.\d+\.\d+)"\}') {
+            throw 'Version.h must contain a stable base version.'
+          }
+          $baseVersion = $Matches.version
+          $version = "$baseVersion-dev.$env:GITHUB_RUN_NUMBER"
+          $source = $source.Replace("kVersion{`"$baseVersion`"}", "kVersion{`"$version`"}")
+          $source = $source.Replace('kReleaseChannel{"stable"}', 'kReleaseChannel{"dev"}')
+          [IO.File]::WriteAllText((Resolve-Path $header), $source, [Text.UTF8Encoding]::new($false))
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Build and test Release
+        shell: powershell
+        run: .\scripts\build.ps1 Release
+      - name: Package portable dev build
+        shell: powershell
+        run: .\scripts\package-release.ps1 -Version '${{ steps.version.outputs.version }}' -SkipBuild
+      - name: Install Inno Setup
+        shell: powershell
+        run: .\scripts\install-inno-setup.ps1
+      - name: Package installer
+        shell: powershell
+        run: .\scripts\build-installer.ps1 -Version '${{ steps.version.outputs.version }}' -SkipPackage
+      - name: Test installer
+        shell: powershell
+        run: .\scripts\test-installer.ps1 -Version '${{ steps.version.outputs.version }}'
+      - name: Publish rolling dev prerelease
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view dev --repo '${{ github.repository }}' *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release delete dev --repo '${{ github.repository }}' --cleanup-tag --yes
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          git tag --force dev '${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}'
+          git push origin refs/tags/dev --force
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = '${{ steps.version.outputs.version }}'
+          gh release create dev `
+            ".\artifacts\package\OpenReplay-$version-win-x64.zip" `
+            ".\artifacts\package\OpenReplay-$version-win-x64.zip.sha256" `
+            ".\artifacts\package\OpenReplay-$version-win-x64-installer.exe" `
+            ".\artifacts\package\OpenReplay-$version-win-x64-installer.exe.sha256" `
+            --repo '${{ github.repository }}' --prerelease --latest=false `
+            --title "OpenReplay $version (dev)" `
+            --notes "Automated development build from commit ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}. Dev builds are prereleases and do not replace the latest stable release."
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

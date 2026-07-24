@@ -27,8 +27,8 @@ public:
 
     bool Initialize(const Settings& settings, std::string& error) override;
     bool ReloadAudioSources(const Settings& settings, std::string& error) override;
-    bool ReloadReplayOutputs(const Settings& settings, bool start_replay, std::string& error) override;
     void Shutdown() noexcept override;
+    bool Healthy() const noexcept override { return !api_.device_lost(); }
     bool StartReplay(std::string& error) override;
     void StopReplay() noexcept override;
     bool ReplayActive() const noexcept override;

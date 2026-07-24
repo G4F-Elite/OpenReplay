@@ -86,6 +86,7 @@ public:
     bool Load(std::string& error);
     void Unload() noexcept;
     [[nodiscard]] bool loaded() const noexcept { return module_ != nullptr; }
+    [[nodiscard]] bool device_lost() const noexcept;
     [[nodiscard]] const std::filesystem::path& runtime_root() const noexcept { return runtime_root_; }
     [[nodiscard]] std::string Version() const;
 

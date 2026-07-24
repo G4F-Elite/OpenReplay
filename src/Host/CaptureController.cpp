@@ -86,12 +86,18 @@ Response CaptureController::Handle(const Command& command) {
             if (engine_.RecordingActive()) {
                 if (!engine_.StopRecording(output, error)) return ErrorResponse(std::move(error));
                 recording_started_ = {};
+                last_output_ = output;
+                WriteHostLog("Rebuilding the capture pipeline after recording stopped");
+                if (!InitializePipeline(error)) {
+                    if (replay_state_.desired()) ScheduleRecovery(error);
+                    return ErrorResponse("Recording was saved, but the capture pipeline could not restart: " + error);
+                }
             } else {
                 if (!pipeline_ready_ && !InitializePipeline(error)) return ErrorResponse(std::move(error));
                 if (!engine_.StartRecording(output, error)) return ErrorResponse(std::move(error));
                 recording_started_ = std::chrono::steady_clock::now();
+                last_output_ = output;
             }
-            last_output_ = std::move(output);
             return StatusResponse(StatusLocked());
         }
 
@@ -152,28 +158,21 @@ Response CaptureController::Handle(const Command& command) {
             if (engine_.RecordingActive()) {
                 return ErrorResponse("Stop recording before changing replay settings");
             }
+            if (engine_.ReplaySaveState().in_progress) {
+                return ErrorResponse("Wait for the current replay save to finish before changing replay settings");
+            }
             auto updated = settings_store_.Load();
-            WriteHostLog("Applying a replay-output-only settings reload");
+            WriteHostLog("Rebuilding the capture pipeline for replay settings");
             if (!CapturePipelineSettingsEqual(settings_, updated)) {
                 return ErrorResponse("Capture settings require a full pipeline reload");
             }
             replay_state_.SetDesired(updated.instant_replay_enabled);
+            settings_ = std::move(updated);
             std::string error;
-            if (!pipeline_ready_) {
-                settings_ = std::move(updated);
-                if (!InitializePipeline(error)) {
-                    if (replay_state_.desired()) ScheduleRecovery(error);
-                    return ErrorResponse(std::move(error));
-                }
-                return StatusResponse(StatusLocked());
-            }
-            if (!engine_.ReloadReplayOutputs(updated, replay_state_.desired(), error)) {
-                if (replay_state_.desired() && !engine_.ReplayActive()) ScheduleRecovery(error);
+            if (!InitializePipeline(error)) {
+                if (replay_state_.desired()) ScheduleRecovery(error);
                 return ErrorResponse(std::move(error));
             }
-            settings_ = std::move(updated);
-            pipeline_error_.clear();
-            if (replay_state_.desired()) replay_state_.MarkRunning();
             return StatusResponse(StatusLocked());
         }
 
@@ -229,17 +228,23 @@ void CaptureController::RecoveryLoop() {
             std::scoped_lock lock{mutex_};
             if (!running_ || !replay_state_.desired()) continue;
 
+            if (pipeline_ready_ && !engine_.Healthy()) {
+                pipeline_ready_ = false;
+                recording_started_ = {};
+                ScheduleRecovery("The Direct3D capture device was lost");
+                continue;
+            }
+
             if (replay_state_.state() == CaptureState::Running && !engine_.ReplayActive()) {
                 if (engine_.RecordingActive() || engine_.ReplaySaveState().in_progress) continue;
                 std::string error;
-                if (engine_.ReloadReplayOutputs(settings_, true, error)) {
+                if (InitializePipeline(error)) {
                     pipeline_error_.clear();
                     replay_state_.MarkRunning();
-                    WriteHostLog("Replay outputs recovered without restarting the capture pipeline");
+                    WriteHostLog("Replay outputs recovered by rebuilding the capture pipeline");
                     continue;
                 }
-                pipeline_ready_ = false;
-                ScheduleRecovery("The replay output stopped unexpectedly and could not be restored: " + error);
+                ScheduleRecovery("The replay output stopped unexpectedly and the capture pipeline could not be rebuilt: " + error);
                 continue;
             }
             if (replay_state_.state() != CaptureState::Recovering ||

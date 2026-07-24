@@ -3,14 +3,18 @@
 #include "openreplay/SettingsStore.h"
 
 #include <array>
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <mutex>
 #include <sstream>
 
 namespace openreplay::host {
 namespace {
+
+std::atomic_bool g_graphics_device_lost{false};
 
 std::filesystem::path ExecutableDirectory() {
     std::array<wchar_t, 32768> path{};
@@ -36,6 +40,10 @@ void ObsLog(int level, const char* format, ::va_list arguments, void*) noexcept 
         const int length = std::vsnprintf(buffer.data(), buffer.size(), format, copy);
         va_end(copy);
         if (length <= 0) return;
+        if (std::strstr(buffer.data(), "887A0005") ||
+            std::strstr(buffer.data(), "Device Removed Reason")) {
+            g_graphics_device_lost = true;
+        }
         WriteHostLog("[OBS " + std::to_string(level) + "] " + buffer.data());
     } catch (...) {
     }
@@ -67,6 +75,7 @@ ObsApi::~ObsApi() { Unload(); }
 
 bool ObsApi::Load(std::string& error) {
     if (loaded()) return true;
+    g_graphics_device_lost = false;
     runtime_root_ = FindRuntimeRoot();
     if (runtime_root_.empty()) {
         error = "OBS runtime was not found beside Host. Run scripts\\deploy-obs-runtime.ps1.";
@@ -101,6 +110,8 @@ bool ObsApi::Load(std::string& error) {
     base_set_log_handler(ObsLog, nullptr);
     return true;
 }
+
+bool ObsApi::device_lost() const noexcept { return g_graphics_device_lost; }
 
 void ObsApi::Unload() noexcept {
     if (module_) FreeLibrary(module_);

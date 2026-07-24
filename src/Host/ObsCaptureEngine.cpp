@@ -18,6 +18,9 @@ namespace {
 constexpr int kModuleSuccess = 0;
 constexpr int kVideoSuccess = 0;
 constexpr long long kCaptureMethodWgc = 2;
+constexpr long long kKeyframeIntervalSeconds = 1;
+constexpr std::uint32_t kReplayGopPaddingSeconds = 1;
+constexpr std::string_view kMp4MuxerSettings = "movflags=faststart avoid_negative_ts=make_zero";
 
 struct ObsDataReleaser {
     ObsApi* api{};
@@ -188,33 +191,6 @@ bool ObsCaptureEngine::ReloadAudioSources(const Settings& settings, std::string&
     return false;
 }
 
-bool ObsCaptureEngine::ReloadReplayOutputs(const Settings& settings, bool start_replay, std::string& error) {
-    {
-        std::scoped_lock lock{replay_save_mutex_};
-        if (replay_save_status_.in_progress) {
-            error = "Wait for the current replay save to finish before changing replay settings";
-            return false;
-        }
-    }
-
-    auto previous = settings_;
-    ReleaseReplayOutputs(false);
-    settings_ = settings;
-    settings_.Normalize();
-    if (CreateReplayOutputs(error) && (!start_replay || StartReplay(error))) return true;
-
-    const auto apply_error = error;
-    ReleaseReplayOutputs(false);
-    settings_ = std::move(previous);
-    std::string restore_error;
-    if (!CreateReplayOutputs(restore_error) || (start_replay && !StartReplay(restore_error))) {
-        error = apply_error + "; previous replay buffers could not be restored: " + restore_error;
-    } else {
-        error = apply_error;
-    }
-    return false;
-}
-
 void ObsCaptureEngine::Shutdown() noexcept {
     ReleasePipeline();
     if (obs_started_) api_.obs_shutdown();
@@ -250,9 +226,8 @@ bool ObsCaptureEngine::LoadModule(std::wstring_view name, bool required, std::st
 bool ObsCaptureEngine::CreateSources(std::string& error) {
     ObsData display_settings{api_.obs_data_create(), ObsDataReleaser{&api_}};
     api_.obs_data_set_string(display_settings.get(), "monitor_id", monitor_.id.c_str());
-    // DXGI duplication can repeatedly return DXGI_ERROR_UNSUPPORTED while still
-    // producing a valid, black encoded stream. WGC is the resilient monitor
-    // capture path on the supported Windows 10/11 versions.
+    // DXGI duplication returns DXGI_ERROR_UNSUPPORTED on some supported systems
+    // while still leaving an active output. WGC avoids a permanently black stream.
     api_.obs_data_set_int(display_settings.get(), "method", kCaptureMethodWgc);
     api_.obs_data_set_bool(display_settings.get(), "capture_cursor", settings_.capture_cursor);
     api_.obs_data_set_bool(display_settings.get(), "force_sdr", true);
@@ -411,7 +386,7 @@ obs_data_t* ObsCaptureEngine::CreateVideoSettings(std::string_view encoder_id) {
                             ? QualityPreset::Balanced
                             : settings_.quality_preset;
     const auto maximum_bitrate = settings_.bitrate_kbps * 3U / 2U;
-    api_.obs_data_set_int(settings, "keyint_sec", 2);
+    api_.obs_data_set_int(settings, "keyint_sec", kKeyframeIntervalSeconds);
     api_.obs_data_set_int(settings, "bitrate", settings_.bitrate_kbps);
     if (encoder_id.starts_with("obs_nvenc")) {
         api_.obs_data_set_string(settings, "rate_control", "VBR");
@@ -424,7 +399,9 @@ obs_data_t* ObsCaptureEngine::CreateVideoSettings(std::string_view encoder_id) {
                                                                ? "disabled"
                                                                : preset == QualityPreset::HighQuality ? "fullres" : "qres");
         api_.obs_data_set_string(settings, "profile", settings_.codec == VideoCodec::H264 ? "high" : "main");
-        api_.obs_data_set_int(settings, "bf", 2);
+        // OBS replay timestamps start at a GOP boundary. B-frame reordering in MP4
+        // makes some Windows playback paths display only a few repeated frames.
+        api_.obs_data_set_int(settings, "bf", settings_.output_format == OutputFormat::Mp4 ? 0 : 2);
         api_.obs_data_set_bool(settings, "psycho_aq", preset != QualityPreset::Performance);
     } else if (encoder_id.find("_amf") != std::string_view::npos) {
         api_.obs_data_set_string(settings, "rate_control", "VBR");
@@ -471,8 +448,13 @@ bool ObsCaptureEngine::CreateReplayOutputs(std::string& error) {
                             std::to_string(seconds) + "s";
         api_.obs_data_set_string(output_settings.get(), "format", format.c_str());
         api_.obs_data_set_string(output_settings.get(), "extension", ToString(settings_.output_format).data());
+        if (settings_.output_format == OutputFormat::Mp4) {
+            api_.obs_data_set_string(output_settings.get(), "muxer_settings", kMp4MuxerSettings.data());
+        }
         api_.obs_data_set_bool(output_settings.get(), "allow_spaces", false);
-        api_.obs_data_set_int(output_settings.get(), "max_time_sec", seconds);
+        // OBS drops the oldest GOP when enforcing max_time_sec. Keep one GOP of
+        // padding so the decodable replay is never shorter than the requested span.
+        api_.obs_data_set_int(output_settings.get(), "max_time_sec", seconds + kReplayGopPaddingSeconds);
         api_.obs_data_set_int(output_settings.get(), "max_size_mb", settings_.replay_max_megabytes);
 
         auto replay = std::make_unique<ReplayOutput>();
@@ -646,6 +628,9 @@ bool ObsCaptureEngine::StartRecording(std::filesystem::path& output, std::string
     ObsData output_settings{api_.obs_data_create(), ObsDataReleaser{&api_}};
     const auto path = ToUtf8(recording_path_.wstring());
     api_.obs_data_set_string(output_settings.get(), "path", path.c_str());
+    if (settings_.output_format == OutputFormat::Mp4) {
+        api_.obs_data_set_string(output_settings.get(), "muxer_settings", kMp4MuxerSettings.data());
+    }
     api_.obs_data_set_bool(output_settings.get(), "allow_overwrite", false);
     recording_output_ = api_.obs_output_create("ffmpeg_muxer", "OpenReplay Recording", output_settings.get(), nullptr);
     if (!recording_output_) {

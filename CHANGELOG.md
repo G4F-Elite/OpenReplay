@@ -5,6 +5,10 @@ Notable user-facing changes are documented here. Development builds use the
 
 ## [Unreleased]
 
+No changes yet.
+
+## [0.1.4] - 2026-07-24
+
 ### Changed
 
 - Centralized WinUI control construction in a shared theme and control factory.
@@ -15,6 +19,10 @@ Notable user-facing changes are documented here. Development builds use the
 
 - Fixed the performance-overlay background-opacity slider having a partially transparent track.
 - Fixed inconsistent slider rendering between static settings and dynamically generated audio-device rows.
+- Fixed recording stop and replay-setting reloads leaving shared OBS encoders with stale, alternating video frames.
+- Added automatic capture-pipeline recovery when the Direct3D device is removed.
+- Fixed MP4 playback paths showing only a few repeated frames by using player-safe encoder and muxer timestamps.
+- Kept replay buffers one keyframe interval longer so saved clips are not shorter than their requested duration.
 
 ## [0.1.3] - 2026-07-24
 
@@ -53,7 +61,8 @@ Notable user-facing changes are documented here. Development builds use the
 
 - Initial OpenReplay release with instant replay, recording, screenshots, audio-device selection, and the WinUI overlay.
 
-[Unreleased]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.0...v0.1.1

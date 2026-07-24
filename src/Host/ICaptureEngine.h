@@ -13,8 +13,8 @@ public:
     virtual ~ICaptureEngine() = default;
     virtual bool Initialize(const Settings& settings, std::string& error) = 0;
     virtual bool ReloadAudioSources(const Settings& settings, std::string& error) = 0;
-    virtual bool ReloadReplayOutputs(const Settings& settings, bool start_replay, std::string& error) = 0;
     virtual void Shutdown() noexcept = 0;
+    virtual bool Healthy() const noexcept = 0;
     virtual bool StartReplay(std::string& error) = 0;
     virtual void StopReplay() noexcept = 0;
     virtual bool ReplayActive() const noexcept = 0;

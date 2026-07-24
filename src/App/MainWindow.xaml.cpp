@@ -109,22 +109,119 @@ void StyleInput(winrt::Microsoft::UI::Xaml::Controls::Control const& control) {
     control.CornerRadius(winrt::Microsoft::UI::Xaml::CornerRadius{8, 8, 8, 8});
 }
 
+void CenterTextContentHosts(winrt::Microsoft::UI::Xaml::DependencyObject const& root) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    using namespace winrt::Microsoft::UI::Xaml::Controls;
+    using namespace winrt::Microsoft::UI::Xaml::Media;
+
+    if (const auto control = root.try_as<Control>()) control.ApplyTemplate();
+    if (const auto element = root.try_as<FrameworkElement>()) {
+        const auto name = element.Name();
+        if (name == L"ContentElement" || name == L"PlaceholderTextContentPresenter") {
+            element.VerticalAlignment(VerticalAlignment::Center);
+        }
+    }
+
+    const auto child_count = VisualTreeHelper::GetChildrenCount(root);
+    for (int32_t index = 0; index < child_count; ++index) {
+        CenterTextContentHosts(VisualTreeHelper::GetChild(root, index));
+    }
+}
+
+void CenterSingleLineInput(winrt::Microsoft::UI::Xaml::Controls::Control const& control) {
+    using namespace winrt::Microsoft::UI::Xaml;
+
+    control.VerticalContentAlignment(VerticalAlignment::Center);
+    control.Loaded([](auto const& sender, auto const&) {
+        CenterTextContentHosts(sender.template as<DependencyObject>());
+    });
+}
+
 void StyleSlider(
     winrt::Microsoft::UI::Xaml::Controls::Slider const& slider,
     winrt::Microsoft::UI::Xaml::Media::Brush const& accent,
     winrt::Microsoft::UI::Xaml::Media::Brush const& accent_hover,
     winrt::Microsoft::UI::Xaml::Media::Brush const& accent_pressed) {
     const auto transparent = Brush(0x00000000);
-    SetResource(slider, L"SliderTrackFill", transparent);
-    SetResource(slider, L"SliderTrackFillPointerOver", transparent);
-    SetResource(slider, L"SliderTrackFillPressed", transparent);
-    SetResource(slider, L"SliderTrackFillDisabled", transparent);
+    const auto track = Brush(0xFF3F3F46);
+    const auto track_hover = Brush(0xFF52525B);
+    const auto track_disabled = Brush(0xFF2A2A2E);
+    slider.Background(transparent);
+    slider.Foreground(accent);
+    SetResource(slider, L"SliderContainerBackground", transparent);
+    SetResource(slider, L"SliderContainerBackgroundPointerOver", transparent);
+    SetResource(slider, L"SliderContainerBackgroundPressed", transparent);
+    SetResource(slider, L"SliderContainerBackgroundDisabled", transparent);
+    SetResource(slider, L"SliderTrackFill", track);
+    SetResource(slider, L"SliderTrackFillPointerOver", track_hover);
+    SetResource(slider, L"SliderTrackFillPressed", track_hover);
+    SetResource(slider, L"SliderTrackFillDisabled", track_disabled);
     SetResource(slider, L"SliderTrackValueFill", accent);
     SetResource(slider, L"SliderTrackValueFillPointerOver", accent_hover);
     SetResource(slider, L"SliderTrackValueFillPressed", accent_pressed);
     SetResource(slider, L"SliderThumbBackground", accent);
     SetResource(slider, L"SliderThumbBackgroundPointerOver", accent_hover);
     SetResource(slider, L"SliderThumbBackgroundPressed", accent_pressed);
+    SetResource(slider, L"SliderOuterThumbBackground", transparent);
+    SetResource(slider, L"SliderThumbBorderBrush", transparent);
+}
+
+void UpdateSliderTrack(
+    winrt::Microsoft::UI::Xaml::Controls::Slider const& slider,
+    winrt::Microsoft::UI::Xaml::Controls::ColumnDefinition const& filled,
+    winrt::Microsoft::UI::Xaml::Controls::ColumnDefinition const& remaining) {
+    const auto range = slider.Maximum() - slider.Minimum();
+    const auto ratio = range > 0 ? (slider.Value() - slider.Minimum()) / range : 0.0;
+    filled.Width(winrt::Microsoft::UI::Xaml::GridLength{ratio,
+        winrt::Microsoft::UI::Xaml::GridUnitType::Star});
+    remaining.Width(winrt::Microsoft::UI::Xaml::GridLength{1.0 - ratio,
+        winrt::Microsoft::UI::Xaml::GridUnitType::Star});
+}
+
+winrt::Microsoft::UI::Xaml::Controls::Grid SliderWithTrack(
+    winrt::Microsoft::UI::Xaml::Controls::Slider const& slider,
+    winrt::Microsoft::UI::Xaml::Media::Brush const& accent) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    using namespace winrt::Microsoft::UI::Xaml::Controls;
+
+    Grid container;
+    container.HorizontalAlignment(HorizontalAlignment::Stretch);
+    slider.HorizontalAlignment(HorizontalAlignment::Stretch);
+    container.Children().Append(slider);
+
+    Grid track;
+    track.HorizontalAlignment(HorizontalAlignment::Stretch);
+    track.IsHitTestVisible(false);
+    Canvas::SetZIndex(track, 1);
+    ColumnDefinition filled;
+    ColumnDefinition thumb;
+    thumb.Width(GridLength{18, GridUnitType::Pixel});
+    ColumnDefinition remaining;
+    track.ColumnDefinitions().Append(filled);
+    track.ColumnDefinitions().Append(thumb);
+    track.ColumnDefinitions().Append(remaining);
+
+    Border filled_track;
+    filled_track.Height(4);
+    filled_track.Background(accent);
+    filled_track.CornerRadius(CornerRadius{2, 2, 2, 2});
+    filled_track.VerticalAlignment(VerticalAlignment::Center);
+    track.Children().Append(filled_track);
+
+    Border remaining_track;
+    remaining_track.Height(4);
+    remaining_track.Background(Brush(0xFF52525B));
+    remaining_track.CornerRadius(CornerRadius{2, 2, 2, 2});
+    remaining_track.VerticalAlignment(VerticalAlignment::Center);
+    Grid::SetColumn(remaining_track, 2);
+    track.Children().Append(remaining_track);
+    container.Children().Append(track);
+
+    UpdateSliderTrack(slider, filled, remaining);
+    slider.ValueChanged([filled, remaining](auto const& sender, auto const&) {
+        UpdateSliderTrack(sender.template as<Slider>(), filled, remaining);
+    });
+    return container;
 }
 
 void StyleToggle(
@@ -136,10 +233,14 @@ void StyleToggle(
     winrt::Microsoft::UI::Xaml::Media::Brush const& off_fill,
     winrt::Microsoft::UI::Xaml::Media::Brush const& off_stroke) {
     toggle.FontFamily(PublicSans());
-    toggle.Width(44);
-    toggle.MinWidth(44);
+    toggle.Width(40);
+    toggle.MinWidth(40);
+    toggle.Height(20);
+    toggle.MinHeight(20);
     toggle.OnContent(nullptr);
     toggle.OffContent(nullptr);
+    SetResource(toggle, L"ToggleSwitchPreContentMargin", winrt::box_value(0.0));
+    SetResource(toggle, L"ToggleSwitchPostContentMargin", winrt::box_value(0.0));
     SetResource(toggle, L"ToggleSwitchFillOn", accent);
     SetResource(toggle, L"ToggleSwitchFillOnPointerOver", accent_hover);
     SetResource(toggle, L"ToggleSwitchFillOnPressed", accent_pressed);
@@ -751,9 +852,10 @@ void MainWindow::BuildUi() {
     replay_duration_slider_.Minimum(15);
     replay_duration_slider_.Maximum(1200);
     replay_duration_slider_.StepFrequency(15);
-    replay_duration_slider_.Margin(Thickness{0, 4, 0, 16});
     replay_duration_slider_.ValueChanged({this, &MainWindow::ReplayDurationSlider_ValueChanged});
-    video_section.Children().Append(replay_duration_slider_);
+    auto replay_duration_slider_control = SliderWithTrack(replay_duration_slider_, accent_brush_);
+    replay_duration_slider_control.Margin(Thickness{0, 4, 0, 16});
+    video_section.Children().Append(replay_duration_slider_control);
 
     quality_selector_ = ComboBox{};
     StyleInput(quality_selector_);
@@ -786,9 +888,10 @@ void MainWindow::BuildUi() {
     bitrate_slider_.Minimum(4);
     bitrate_slider_.Maximum(120);
     bitrate_slider_.StepFrequency(1);
-    bitrate_slider_.Margin(Thickness{0, 4, 0, 16});
     bitrate_slider_.ValueChanged({this, &MainWindow::BitrateSlider_ValueChanged});
-    video_section.Children().Append(bitrate_slider_);
+    auto bitrate_slider_control = SliderWithTrack(bitrate_slider_, accent_brush_);
+    bitrate_slider_control.Margin(Thickness{0, 4, 0, 16});
+    video_section.Children().Append(bitrate_slider_control);
 
     Border replay_estimate;
     replay_estimate.Background(near_black_green_brush);
@@ -887,7 +990,7 @@ void MainWindow::BuildUi() {
 
     StackPanel shortcuts_content;
     shortcuts_content.Spacing(8);
-    shortcuts_content.Padding(Thickness{4, 6, 0, 8});
+    shortcuts_content.Padding(Thickness{4, 6, 4, 8});
     shortcuts_content.HorizontalAlignment(HorizontalAlignment::Stretch);
     replay_hotkeys_panel_ = StackPanel{};
     replay_hotkeys_panel_.Spacing(8);
@@ -903,10 +1006,11 @@ void MainWindow::BuildUi() {
     recording_shortcut_surface.BorderBrush(card_border_brush);
     recording_shortcut_surface.BorderThickness(Thickness{1, 1, 1, 1});
     recording_shortcut_surface.CornerRadius(CornerRadius{8, 8, 8, 8});
-    recording_shortcut_surface.Padding(Thickness{10, 9, 10, 9});
+    recording_shortcut_surface.Padding(Thickness{12, 12, 12, 12});
     StackPanel recording_shortcut_block;
-    recording_shortcut_block.Spacing(6);
+    recording_shortcut_block.Spacing(10);
     Grid recording_shortcut_header;
+    recording_shortcut_header.Height(20);
     AddColumn(recording_shortcut_header, 1, GridUnitType::Star);
     AddColumn(recording_shortcut_header, 0, GridUnitType::Auto);
     recording_hotkey_label_ = Text(L"Запись сессии", 12.5, primary_text_brush);
@@ -916,6 +1020,7 @@ void MainWindow::BuildUi() {
     recording_hotkey_toggle_ = ToggleSwitch{};
     StyleToggle(recording_hotkey_toggle_, accent_brush_, success_brush_, accent_dark_brush,
                 primary_text_brush, quiet_button_brush, muted_brush);
+    recording_hotkey_toggle_.VerticalAlignment(VerticalAlignment::Center);
     recording_hotkey_toggle_.Toggled([this](auto&&, auto&&) {
         if (updating_ui_) return;
         ValidateHotkeys(true, false);
@@ -927,6 +1032,9 @@ void MainWindow::BuildUi() {
     recording_hotkey_input_ = TextBox{};
     StyleInput(recording_hotkey_input_);
     recording_hotkey_input_.Height(36);
+    recording_hotkey_input_.MinHeight(36);
+    recording_hotkey_input_.Padding(Thickness{12, 0, 12, 0});
+    CenterSingleLineInput(recording_hotkey_input_);
     recording_hotkey_input_.IsReadOnly(true);
     recording_hotkey_input_.PlaceholderText(L"Нажмите сочетание");
     recording_hotkey_input_.KeyDown({this, &MainWindow::RecordingHotkey_KeyDown});
@@ -947,10 +1055,11 @@ void MainWindow::BuildUi() {
     screenshot_surface.BorderBrush(card_border_brush);
     screenshot_surface.BorderThickness(Thickness{1, 1, 1, 1});
     screenshot_surface.CornerRadius(CornerRadius{8, 8, 8, 8});
-    screenshot_surface.Padding(Thickness{10, 9, 10, 9});
+    screenshot_surface.Padding(Thickness{12, 12, 12, 12});
     StackPanel screenshot_block;
-    screenshot_block.Spacing(6);
+    screenshot_block.Spacing(10);
     Grid screenshot_shortcut_header;
+    screenshot_shortcut_header.Height(20);
     AddColumn(screenshot_shortcut_header, 1, GridUnitType::Star);
     AddColumn(screenshot_shortcut_header, 0, GridUnitType::Auto);
     screenshot_hotkey_label_ = Text(L"Снимок экрана", 12.5, primary_text_brush);
@@ -960,6 +1069,7 @@ void MainWindow::BuildUi() {
     screenshot_hotkey_toggle_ = ToggleSwitch{};
     StyleToggle(screenshot_hotkey_toggle_, accent_brush_, success_brush_, accent_dark_brush,
                 primary_text_brush, quiet_button_brush, muted_brush);
+    screenshot_hotkey_toggle_.VerticalAlignment(VerticalAlignment::Center);
     screenshot_hotkey_toggle_.Toggled([this](auto&&, auto&&) {
         if (updating_ui_) return;
         ValidateHotkeys(true, false);
@@ -971,6 +1081,9 @@ void MainWindow::BuildUi() {
     screenshot_hotkey_input_ = TextBox{};
     StyleInput(screenshot_hotkey_input_);
     screenshot_hotkey_input_.Height(36);
+    screenshot_hotkey_input_.MinHeight(36);
+    screenshot_hotkey_input_.Padding(Thickness{12, 0, 12, 0});
+    CenterSingleLineInput(screenshot_hotkey_input_);
     screenshot_hotkey_input_.IsReadOnly(true);
     screenshot_hotkey_input_.PlaceholderText(L"Нажмите сочетание");
     screenshot_hotkey_input_.KeyDown({this, &MainWindow::ScreenshotHotkey_KeyDown});
@@ -1360,15 +1473,16 @@ void MainWindow::RebuildReplayHotkeyRows() {
         surface.BorderBrush(Brush(0xFF3F3F46));
         surface.BorderThickness(Thickness{1, 1, 1, 1});
         surface.CornerRadius(CornerRadius{8, 8, 8, 8});
-        surface.Padding(Thickness{10, 9, 10, 9});
+        surface.Padding(Thickness{12, 12, 12, 12});
 
         StackPanel block;
-        block.Spacing(6);
+        block.Spacing(10);
         Grid header;
+        header.Height(20);
         AddColumn(header, 1, GridUnitType::Star);
         AddColumn(header, 0, GridUnitType::Auto);
-        AddColumn(header, 6, GridUnitType::Pixel);
-        AddColumn(header, 30, GridUnitType::Pixel);
+        AddColumn(header, 8, GridUnitType::Pixel);
+        AddColumn(header, 20, GridUnitType::Pixel);
         auto label = Text((english_ ? L"Replay " : L"Повтор ") + std::to_wstring(index + 1), 12.5, primary);
         label.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
         label.VerticalAlignment(VerticalAlignment::Center);
@@ -1377,6 +1491,7 @@ void MainWindow::RebuildReplayHotkeyRows() {
 
         ToggleSwitch toggle;
         StyleToggle(toggle, accent_brush_, success_brush_, accent_dark, primary, quiet, muted);
+        toggle.VerticalAlignment(VerticalAlignment::Center);
         toggle.IsOn(binding.enabled);
         toggle.Toggled([this](auto&&, auto&&) {
             ValidateHotkeys(true, false);
@@ -1387,11 +1502,18 @@ void MainWindow::RebuildReplayHotkeyRows() {
         replay_hotkey_toggles_.push_back(toggle);
 
         auto remove = ActionButton(L"×", quiet, primary);
-        remove.Width(30);
-        remove.Height(30);
-        remove.MinHeight(30);
+        remove.Width(20);
+        remove.Height(20);
+        remove.MinWidth(20);
+        remove.MinHeight(20);
         remove.Padding(Thickness{});
-        remove.FontSize(17);
+        remove.CornerRadius(CornerRadius{10, 10, 10, 10});
+        FontIcon remove_icon;
+        remove_icon.Glyph(L"\xE711");
+        remove_icon.FontSize(10);
+        remove.Content(remove_icon);
+        remove.VerticalAlignment(VerticalAlignment::Center);
+        remove.VerticalContentAlignment(VerticalAlignment::Center);
         remove.Click({this, &MainWindow::ReplayHotkeyRemove_Click});
         remove.IsEnabled(replay_hotkey_draft_.size() > 1);
         Grid::SetColumn(remove, 3);
@@ -1407,6 +1529,9 @@ void MainWindow::RebuildReplayHotkeyRows() {
         TextBox input;
         StyleInput(input);
         input.Height(36);
+        input.MinHeight(36);
+        input.Padding(Thickness{12, 0, 12, 0});
+        CenterSingleLineInput(input);
         input.IsReadOnly(true);
         input.Text(openreplay::FromUtf8(binding.chord));
         input.PlaceholderText(english_ ? L"Press shortcut" : L"Нажмите сочетание");
@@ -1417,6 +1542,9 @@ void MainWindow::RebuildReplayHotkeyRows() {
         NumberBox duration;
         StyleInput(duration);
         duration.Height(36);
+        duration.MinHeight(36);
+        duration.Padding(Thickness{10, 0, 4, 0});
+        CenterSingleLineInput(duration);
         duration.Minimum(15);
         duration.Maximum(1200);
         duration.SmallChange(15);

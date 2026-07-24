@@ -34,6 +34,10 @@ jobs:
           $source = Get-Content .\src\Shared\include\openreplay\Version.h -Raw
           if ($source -notmatch 'kVersion\{"(?<version>\d+\.\d+\.\d+)"\}') { throw 'Version.h does not contain kVersion.' }
           if ($Matches.version -ne '${{ steps.version.outputs.version }}') { throw "Tag and Version.h differ." }
+          if ($source -notmatch 'kReleaseChannel\{"stable"\}') { throw 'Stable releases require the stable release channel.' }
+      - name: Prepare release notes
+        shell: powershell
+        run: .\scripts\get-changelog-section.ps1 -Version '${{ steps.version.outputs.version }}' -Output .\release-notes.md
       - name: Build and test Release
         shell: powershell
         run: .\scripts\build.ps1 Release
@@ -75,5 +79,5 @@ jobs:
             ".\artifacts\package\OpenReplay-${{ steps.version.outputs.version }}-win-x64-installer.exe.sha256" `
             ".\artifacts\package\OpenReplay-update.json" `
             ".\artifacts\package\OpenReplay-update.json.sig" `
-            --repo '${{ github.repository }}' --verify-tag --generate-notes `
+            --repo '${{ github.repository }}' --verify-tag --notes-file ".\release-notes.md" `
             --title "OpenReplay ${{ steps.version.outputs.tag }}"

@@ -33,15 +33,22 @@ jobs:
         run: |
           $header = '.\src\Shared\include\openreplay\Version.h'
           $source = Get-Content -LiteralPath $header -Raw
+          if ($source -notmatch 'kReleaseChannel\{"dev"\}') {
+            throw 'Version.h must use the dev release channel on main.'
+          }
           if ($source -notmatch 'kVersion\{"(?<version>\d+\.\d+\.\d+)"\}') {
-            throw 'Version.h must contain a stable base version.'
+            throw 'Version.h must contain a semantic base version.'
           }
           $baseVersion = $Matches.version
           $version = "$baseVersion-dev.$env:GITHUB_RUN_NUMBER"
           $source = $source.Replace("kVersion{`"$baseVersion`"}", "kVersion{`"$version`"}")
-          $source = $source.Replace('kReleaseChannel{"stable"}', 'kReleaseChannel{"dev"}')
           [IO.File]::WriteAllText((Resolve-Path $header), $source, [Text.UTF8Encoding]::new($false))
           "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Prepare release notes
+        shell: powershell
+        run: |
+          .\scripts\get-changelog-section.ps1 -Version Unreleased -Output .\release-notes.md
+          Add-Content -LiteralPath .\release-notes.md -Value "`nBuild: ${{ steps.version.outputs.version }}`nCommit: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}"
       - name: Build and test Release
         shell: powershell
         run: .\scripts\build.ps1 Release
@@ -80,5 +87,5 @@ jobs:
             ".\artifacts\package\OpenReplay-$version-win-x64-installer.exe.sha256" `
             --repo '${{ github.repository }}' --prerelease --latest=false `
             --title "OpenReplay $version (dev)" `
-            --notes "Automated development build from commit ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}. Dev builds are prereleases and do not replace the latest stable release."
+            --notes-file ".\release-notes.md"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

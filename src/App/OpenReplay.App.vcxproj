@@ -90,6 +90,7 @@
     <ClInclude Include="pch.h" />
     <ClInclude Include="PerformanceOverlay.h" />
     <ClInclude Include="StartupTrace.h" />
+    <ClInclude Include="UiControls.h" />
     <ClInclude Include="UpdateService.h" />
     <ClInclude Include="WindowPlacement.h" />
     <ClInclude Include="App.xaml.h"><DependentUpon>App.xaml</DependentUpon></ClInclude>
@@ -99,6 +100,7 @@
     <ClCompile Include="pch.cpp"><PrecompiledHeader>Create</PrecompiledHeader></ClCompile>
     <ClCompile Include="PerformanceOverlay.cpp" />
     <ClCompile Include="StartupTrace.cpp" />
+    <ClCompile Include="UiControls.cpp" />
     <ClCompile Include="UpdateService.cpp" />
     <ClCompile Include="WindowPlacement.cpp" />
     <ClCompile Include="App.xaml.cpp"><DependentUpon>App.xaml</DependentUpon></ClCompile>
@@ -114,7 +116,6 @@
     <OpenReplayAsset Include="Assets\PublicSans-OFL.txt" />
     <ApplicationDefinition Include="App.xaml" />
     <Page Include="MainWindow.xaml" />
-    <None Include="Styles.xaml" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260529003" />

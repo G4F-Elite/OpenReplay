@@ -4,6 +4,8 @@
 [![GitHub Release](https://img.shields.io/github/v/release/G4F-Elite/OpenReplay)](https://github.com/G4F-Elite/OpenReplay/releases/latest)
 [![License](https://img.shields.io/github/license/G4F-Elite/OpenReplay)](LICENSE)
 
+See [CHANGELOG.md](CHANGELOG.md) for release and development-build changes.
+
 OpenReplay is a Windows desktop recorder focused on a resilient instant replay buffer, direct recording, and screenshots. The `Alt+Z` overlay runs separately from capture so closing the UI cannot silently disable replay.
 
 ## MVP
@@ -62,7 +64,7 @@ Create the installer from the portable release stage:
 .\scripts\test-installer.ps1
 ```
 
-The public CI workflow builds and tests every pull request and `main` push. After a successful `main` build, the dev-release workflow refreshes the `dev` GitHub prerelease with versioned installer and portable assets. Pushing a stable tag matching `Version.h`, for example `v0.1.3`, runs the stable release workflow and publishes the installer, portable ZIP, checksums, signed update manifest, and signature. Stable automatic updates continue to use only the signed stable portable payload for both installation modes; dev prereleases never replace `releases/latest`.
+The public CI workflow builds and tests every pull request and `main` push. After a successful `main` build, the dev-release workflow refreshes the `dev` GitHub prerelease with versioned installer, portable assets, and notes from the `Unreleased` changelog section. Stable releases require changing `Version.h` to the `stable` channel, adding a matching changelog section, and pushing the matching tag, for example `v0.1.4`. The stable workflow publishes the installer, portable ZIP, checksums, signed update manifest, signature, and curated changelog notes. Stable automatic updates continue to use only the signed stable portable payload for both installation modes; dev prereleases never replace `releases/latest`.
 
 MP4 is the default for broad compatibility, while MKV remains available from Storage settings. Distributable builds must retain the OBS runtime notice and comply with the GPL and the licenses of bundled runtime dependencies.
 

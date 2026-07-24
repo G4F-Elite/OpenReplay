@@ -2,6 +2,7 @@
 
 #include "MainWindow.xaml.h"
 #include "StartupTrace.h"
+#include "UiControls.h"
 #include "WindowPlacement.h"
 
 #include "openreplay/Version.h"
@@ -18,6 +19,15 @@
 #include <limits>
 
 namespace {
+
+using openreplay::ui::AddColumn;
+using openreplay::ui::AddRow;
+using openreplay::ui::Brush;
+using openreplay::ui::ButtonKind;
+using openreplay::ui::ControlFactory;
+using openreplay::ui::DarkTheme;
+using openreplay::ui::PublicSans;
+using openreplay::ui::Text;
 
 constexpr UINT_PTR kNotificationAnimationTimer = 1;
 constexpr UINT_PTR kNotificationHideTimer = 2;
@@ -38,229 +48,6 @@ std::wstring DurationText(long long total_seconds) {
     wchar_t value[32]{};
     swprintf_s(value, L"%02lld:%02lld:%02lld", hours, minutes, seconds);
     return value;
-}
-
-winrt::Microsoft::UI::Xaml::Media::SolidColorBrush Brush(uint32_t argb) {
-    winrt::Windows::UI::Color color{};
-    color.A = static_cast<uint8_t>(argb >> 24);
-    color.R = static_cast<uint8_t>(argb >> 16);
-    color.G = static_cast<uint8_t>(argb >> 8);
-    color.B = static_cast<uint8_t>(argb);
-    return winrt::Microsoft::UI::Xaml::Media::SolidColorBrush{color};
-}
-
-winrt::Microsoft::UI::Xaml::Media::FontFamily PublicSans() {
-    return winrt::Microsoft::UI::Xaml::Media::FontFamily{
-        L"ms-appx:///Assets/PublicSans-Variable.ttf#Public Sans"};
-}
-
-void SetResource(winrt::Microsoft::UI::Xaml::FrameworkElement const& element, std::wstring_view key,
-                 winrt::Windows::Foundation::IInspectable const& value) {
-    (void)element.Resources().Insert(winrt::box_value(winrt::hstring{key}), value);
-}
-
-winrt::Microsoft::UI::Xaml::Controls::TextBlock Text(
-    std::wstring_view value, double size,
-    winrt::Microsoft::UI::Xaml::Media::Brush const& foreground) {
-    winrt::Microsoft::UI::Xaml::Controls::TextBlock text;
-    text.Text(winrt::hstring{value});
-    text.FontSize(size);
-    text.FontFamily(PublicSans());
-    text.Foreground(foreground);
-    return text;
-}
-
-void AddRow(winrt::Microsoft::UI::Xaml::Controls::Grid const& grid, double value,
-            winrt::Microsoft::UI::Xaml::GridUnitType type) {
-    winrt::Microsoft::UI::Xaml::Controls::RowDefinition row;
-    row.Height(winrt::Microsoft::UI::Xaml::GridLength{value, type});
-    grid.RowDefinitions().Append(row);
-}
-
-void AddColumn(winrt::Microsoft::UI::Xaml::Controls::Grid const& grid, double value,
-               winrt::Microsoft::UI::Xaml::GridUnitType type) {
-    winrt::Microsoft::UI::Xaml::Controls::ColumnDefinition column;
-    column.Width(winrt::Microsoft::UI::Xaml::GridLength{value, type});
-    grid.ColumnDefinitions().Append(column);
-}
-
-winrt::Microsoft::UI::Xaml::Controls::Button ActionButton(
-    std::wstring_view label,
-    winrt::Microsoft::UI::Xaml::Media::Brush const& background,
-    winrt::Microsoft::UI::Xaml::Media::Brush const& foreground) {
-    winrt::Microsoft::UI::Xaml::Controls::Button button;
-    button.Content(winrt::box_value(winrt::hstring{label}));
-    button.Background(background);
-    button.Foreground(foreground);
-    button.FontFamily(PublicSans());
-    button.FontSize(13);
-    button.FontWeight(winrt::Windows::UI::Text::FontWeights::SemiBold());
-    button.MinHeight(42);
-    button.Padding(winrt::Microsoft::UI::Xaml::Thickness{16, 9, 16, 9});
-    button.CornerRadius(winrt::Microsoft::UI::Xaml::CornerRadius{12, 12, 12, 12});
-    button.HorizontalContentAlignment(winrt::Microsoft::UI::Xaml::HorizontalAlignment::Center);
-    return button;
-}
-
-void StyleInput(winrt::Microsoft::UI::Xaml::Controls::Control const& control) {
-    control.FontFamily(PublicSans());
-    control.FontSize(13);
-    control.MinHeight(38);
-    control.CornerRadius(winrt::Microsoft::UI::Xaml::CornerRadius{8, 8, 8, 8});
-}
-
-void CenterTextContentHosts(winrt::Microsoft::UI::Xaml::DependencyObject const& root) {
-    using namespace winrt::Microsoft::UI::Xaml;
-    using namespace winrt::Microsoft::UI::Xaml::Controls;
-    using namespace winrt::Microsoft::UI::Xaml::Media;
-
-    if (const auto control = root.try_as<Control>()) control.ApplyTemplate();
-    if (const auto element = root.try_as<FrameworkElement>()) {
-        const auto name = element.Name();
-        if (name == L"ContentElement" || name == L"PlaceholderTextContentPresenter") {
-            element.VerticalAlignment(VerticalAlignment::Center);
-        }
-    }
-
-    const auto child_count = VisualTreeHelper::GetChildrenCount(root);
-    for (int32_t index = 0; index < child_count; ++index) {
-        CenterTextContentHosts(VisualTreeHelper::GetChild(root, index));
-    }
-}
-
-void CenterSingleLineInput(winrt::Microsoft::UI::Xaml::Controls::Control const& control) {
-    using namespace winrt::Microsoft::UI::Xaml;
-
-    control.VerticalContentAlignment(VerticalAlignment::Center);
-    control.Loaded([](auto const& sender, auto const&) {
-        CenterTextContentHosts(sender.template as<DependencyObject>());
-    });
-}
-
-void StyleSlider(
-    winrt::Microsoft::UI::Xaml::Controls::Slider const& slider,
-    winrt::Microsoft::UI::Xaml::Media::Brush const& accent,
-    winrt::Microsoft::UI::Xaml::Media::Brush const& accent_hover,
-    winrt::Microsoft::UI::Xaml::Media::Brush const& accent_pressed) {
-    const auto transparent = Brush(0x00000000);
-    const auto track = Brush(0xFF3F3F46);
-    const auto track_hover = Brush(0xFF52525B);
-    const auto track_disabled = Brush(0xFF2A2A2E);
-    slider.Background(transparent);
-    slider.Foreground(accent);
-    SetResource(slider, L"SliderContainerBackground", transparent);
-    SetResource(slider, L"SliderContainerBackgroundPointerOver", transparent);
-    SetResource(slider, L"SliderContainerBackgroundPressed", transparent);
-    SetResource(slider, L"SliderContainerBackgroundDisabled", transparent);
-    SetResource(slider, L"SliderTrackFill", track);
-    SetResource(slider, L"SliderTrackFillPointerOver", track_hover);
-    SetResource(slider, L"SliderTrackFillPressed", track_hover);
-    SetResource(slider, L"SliderTrackFillDisabled", track_disabled);
-    SetResource(slider, L"SliderTrackValueFill", accent);
-    SetResource(slider, L"SliderTrackValueFillPointerOver", accent_hover);
-    SetResource(slider, L"SliderTrackValueFillPressed", accent_pressed);
-    SetResource(slider, L"SliderThumbBackground", accent);
-    SetResource(slider, L"SliderThumbBackgroundPointerOver", accent_hover);
-    SetResource(slider, L"SliderThumbBackgroundPressed", accent_pressed);
-    SetResource(slider, L"SliderOuterThumbBackground", transparent);
-    SetResource(slider, L"SliderThumbBorderBrush", transparent);
-}
-
-void UpdateSliderTrack(
-    winrt::Microsoft::UI::Xaml::Controls::Slider const& slider,
-    winrt::Microsoft::UI::Xaml::Controls::ColumnDefinition const& filled,
-    winrt::Microsoft::UI::Xaml::Controls::ColumnDefinition const& remaining) {
-    const auto range = slider.Maximum() - slider.Minimum();
-    const auto ratio = range > 0 ? (slider.Value() - slider.Minimum()) / range : 0.0;
-    filled.Width(winrt::Microsoft::UI::Xaml::GridLength{ratio,
-        winrt::Microsoft::UI::Xaml::GridUnitType::Star});
-    remaining.Width(winrt::Microsoft::UI::Xaml::GridLength{1.0 - ratio,
-        winrt::Microsoft::UI::Xaml::GridUnitType::Star});
-}
-
-winrt::Microsoft::UI::Xaml::Controls::Grid SliderWithTrack(
-    winrt::Microsoft::UI::Xaml::Controls::Slider const& slider,
-    winrt::Microsoft::UI::Xaml::Media::Brush const& accent) {
-    using namespace winrt::Microsoft::UI::Xaml;
-    using namespace winrt::Microsoft::UI::Xaml::Controls;
-
-    Grid container;
-    container.HorizontalAlignment(HorizontalAlignment::Stretch);
-    slider.HorizontalAlignment(HorizontalAlignment::Stretch);
-    container.Children().Append(slider);
-
-    Grid track;
-    track.HorizontalAlignment(HorizontalAlignment::Stretch);
-    track.IsHitTestVisible(false);
-    Canvas::SetZIndex(track, 1);
-    ColumnDefinition filled;
-    ColumnDefinition thumb;
-    thumb.Width(GridLength{18, GridUnitType::Pixel});
-    ColumnDefinition remaining;
-    track.ColumnDefinitions().Append(filled);
-    track.ColumnDefinitions().Append(thumb);
-    track.ColumnDefinitions().Append(remaining);
-
-    Border filled_track;
-    filled_track.Height(4);
-    filled_track.Background(accent);
-    filled_track.CornerRadius(CornerRadius{2, 2, 2, 2});
-    filled_track.VerticalAlignment(VerticalAlignment::Center);
-    track.Children().Append(filled_track);
-
-    Border remaining_track;
-    remaining_track.Height(4);
-    remaining_track.Background(Brush(0xFF52525B));
-    remaining_track.CornerRadius(CornerRadius{2, 2, 2, 2});
-    remaining_track.VerticalAlignment(VerticalAlignment::Center);
-    Grid::SetColumn(remaining_track, 2);
-    track.Children().Append(remaining_track);
-    container.Children().Append(track);
-
-    UpdateSliderTrack(slider, filled, remaining);
-    slider.ValueChanged([filled, remaining](auto const& sender, auto const&) {
-        UpdateSliderTrack(sender.template as<Slider>(), filled, remaining);
-    });
-    return container;
-}
-
-void StyleToggle(
-    winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch const& toggle,
-    winrt::Microsoft::UI::Xaml::Media::Brush const& accent,
-    winrt::Microsoft::UI::Xaml::Media::Brush const& accent_hover,
-    winrt::Microsoft::UI::Xaml::Media::Brush const& accent_pressed,
-    winrt::Microsoft::UI::Xaml::Media::Brush const& knob,
-    winrt::Microsoft::UI::Xaml::Media::Brush const& off_fill,
-    winrt::Microsoft::UI::Xaml::Media::Brush const& off_stroke) {
-    toggle.FontFamily(PublicSans());
-    toggle.Width(40);
-    toggle.MinWidth(40);
-    toggle.Height(20);
-    toggle.MinHeight(20);
-    toggle.OnContent(nullptr);
-    toggle.OffContent(nullptr);
-    SetResource(toggle, L"ToggleSwitchPreContentMargin", winrt::box_value(0.0));
-    SetResource(toggle, L"ToggleSwitchPostContentMargin", winrt::box_value(0.0));
-    SetResource(toggle, L"ToggleSwitchFillOn", accent);
-    SetResource(toggle, L"ToggleSwitchFillOnPointerOver", accent_hover);
-    SetResource(toggle, L"ToggleSwitchFillOnPressed", accent_pressed);
-    SetResource(toggle, L"ToggleSwitchStrokeOn", accent);
-    SetResource(toggle, L"ToggleSwitchStrokeOnPointerOver", accent_hover);
-    SetResource(toggle, L"ToggleSwitchStrokeOnPressed", accent_pressed);
-    SetResource(toggle, L"ToggleSwitchKnobFillOn", knob);
-    SetResource(toggle, L"ToggleSwitchKnobFillOnPointerOver", knob);
-    SetResource(toggle, L"ToggleSwitchKnobFillOnPressed", knob);
-    SetResource(toggle, L"ToggleSwitchFillOff", off_fill);
-    SetResource(toggle, L"ToggleSwitchFillOffPointerOver", off_stroke);
-    SetResource(toggle, L"ToggleSwitchStrokeOff", off_stroke);
-    SetResource(toggle, L"ToggleSwitchKnobFillOff", knob);
-}
-
-winrt::Microsoft::UI::Xaml::Controls::ComboBoxItem ComboItem(std::wstring_view label) {
-    winrt::Microsoft::UI::Xaml::Controls::ComboBoxItem item;
-    item.FontFamily(PublicSans());
-    item.Content(winrt::box_value(winrt::hstring{label}));
-    return item;
 }
 
 std::wstring FriendlyMonitorName(std::wstring_view display_name) {
@@ -496,21 +283,23 @@ void MainWindow::BuildUi() {
     using namespace Microsoft::UI::Xaml;
     using namespace Microsoft::UI::Xaml::Controls;
 
-    const auto root_brush = Brush(0xFF1B1718);
-    const auto panel_brush = Brush(0xFF18181B);
-    const auto card_brush = Brush(0xFF27272A);
-    const auto card_hover_brush = Brush(0xFF303034);
-    const auto card_border_brush = Brush(0xFF3F3F46);
-    accent_brush_ = Brush(0xFF00C16A);
-    success_brush_ = Brush(0xFF00DC82);
-    const auto accent_dark_brush = Brush(0xFF007F45);
-    const auto deep_green_brush = Brush(0xFF016538);
-    const auto near_black_green_brush = Brush(0xFF052E16);
-    const auto primary_text_brush = Brush(0xFFFFFFFF);
-    secondary_text_brush_ = Brush(0xFFA1A1AA);
-    danger_brush_ = Brush(0xFFFF5C67);
-    const auto quiet_button_brush = Brush(0xFF3F3F46);
-    const auto muted_brush = Brush(0xFF71717A);
+    const auto theme = DarkTheme();
+    const ControlFactory controls{theme};
+    const auto root_brush = theme.root;
+    const auto panel_brush = theme.panel;
+    const auto card_brush = theme.card;
+    const auto card_hover_brush = theme.card_hover;
+    const auto card_border_brush = theme.border;
+    accent_brush_ = theme.accent;
+    success_brush_ = theme.accent_hover;
+    const auto accent_dark_brush = theme.accent_pressed;
+    const auto deep_green_brush = theme.status_border;
+    const auto near_black_green_brush = theme.accent_text;
+    const auto primary_text_brush = theme.primary_text;
+    secondary_text_brush_ = theme.secondary_text;
+    danger_brush_ = theme.danger;
+    const auto quiet_button_brush = theme.quiet;
+    const auto muted_brush = theme.muted;
 
     root_ = Grid{};
     root_.Background(root_brush);
@@ -563,7 +352,7 @@ void MainWindow::BuildUi() {
     brand.Children().Append(brand_copy);
     header.Children().Append(brand);
 
-    settings_button_ = ActionButton(L"", quiet_button_brush, primary_text_brush);
+    settings_button_ = controls.ActionButton(L"");
     settings_button_.Margin(Thickness{0, 0, 8, 0});
     settings_button_.MinWidth(102);
     settings_button_.VerticalAlignment(VerticalAlignment::Center);
@@ -574,7 +363,7 @@ void MainWindow::BuildUi() {
     Grid::SetColumn(settings_button_, 1);
     header.Children().Append(settings_button_);
 
-    auto close_button = ActionButton(L"×", quiet_button_brush, primary_text_brush);
+    auto close_button = controls.ActionButton(L"×");
     close_button.Width(42);
     close_button.Height(42);
     close_button.Padding(Thickness{0, 0, 0, 0});
@@ -644,9 +433,7 @@ void MainWindow::BuildUi() {
     replay_title_.FontWeight(Windows::UI::Text::FontWeights::Bold());
     replay_title_.VerticalAlignment(VerticalAlignment::Center);
     replay_header.Children().Append(replay_title_);
-    replay_toggle_ = ToggleSwitch{};
-    StyleToggle(replay_toggle_, accent_brush_, success_brush_, accent_dark_brush,
-                primary_text_brush, quiet_button_brush, muted_brush);
+    replay_toggle_ = controls.Toggle();
     replay_toggle_.HorizontalAlignment(HorizontalAlignment::Right);
     replay_toggle_.VerticalAlignment(VerticalAlignment::Center);
     replay_toggle_.Toggled({this, &MainWindow::ReplayToggle_Toggled});
@@ -670,7 +457,7 @@ void MainWindow::BuildUi() {
     replay_description_.LineHeight(18);
     replay_description_.Margin(Thickness{0, 12, 0, 14});
     replay_card.Children().Append(replay_description_);
-    save_replay_button_ = ActionButton(L"Сохранить последние 60 сек", accent_brush_, near_black_green_brush);
+    save_replay_button_ = controls.ActionButton(L"Сохранить последние 60 сек", ButtonKind::Accent);
     save_replay_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
     save_replay_button_.Click({this, &MainWindow::SaveReplay_Click});
     replay_card.Children().Append(save_replay_button_);
@@ -694,7 +481,7 @@ void MainWindow::BuildUi() {
     recording_description_.LineHeight(18);
     recording_description_.Margin(Thickness{0, 13, 0, 14});
     recording_card.Children().Append(recording_description_);
-    recording_button_ = ActionButton(L"Начать запись", quiet_button_brush, primary_text_brush);
+    recording_button_ = controls.ActionButton(L"Начать запись");
     recording_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
     recording_button_.Click({this, &MainWindow::RecordingButton_Click});
     recording_card.Children().Append(recording_button_);
@@ -719,7 +506,7 @@ void MainWindow::BuildUi() {
     screenshot_description_.LineHeight(18);
     screenshot_description_.Margin(Thickness{0, 13, 0, 14});
     screenshot_card.Children().Append(screenshot_description_);
-    screenshot_button_ = ActionButton(L"Сделать снимок", quiet_button_brush, primary_text_brush);
+    screenshot_button_ = controls.ActionButton(L"Сделать снимок");
     screenshot_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
     screenshot_button_.Click({this, &MainWindow::ScreenshotButton_Click});
     screenshot_card.Children().Append(screenshot_button_);
@@ -746,7 +533,7 @@ void MainWindow::BuildUi() {
     settings_heading.Children().Append(settings_title_);
     settings_heading.Children().Append(settings_subtitle_);
     settings_header.Children().Append(settings_heading);
-    back_button_ = ActionButton(L"← Назад", quiet_button_brush, primary_text_brush);
+    back_button_ = controls.ActionButton(L"← Назад");
     back_button_.Click({this, &MainWindow::BackButton_Click});
     Grid::SetColumn(back_button_, 1);
     settings_header.Children().Append(back_button_);
@@ -793,9 +580,7 @@ void MainWindow::BuildUi() {
 
     const auto source_section = create_section(source_section_title_, L"ИСТОЧНИК");
 
-    monitor_selector_ = ComboBox{};
-    StyleInput(monitor_selector_);
-    monitor_selector_.HorizontalAlignment(HorizontalAlignment::Stretch);
+    monitor_selector_ = controls.Select();
     monitor_selector_.SelectionChanged([this](auto&&, auto&&) { ScheduleSettingsApply(); });
     add_field(source_section, monitor_label_, L"Монитор", monitor_selector_);
 
@@ -847,22 +632,17 @@ void MainWindow::BuildUi() {
     Grid::SetColumn(replay_duration_value_, 1);
     duration_header.Children().Append(replay_duration_value_);
     video_section.Children().Append(duration_header);
-    replay_duration_slider_ = Slider{};
-    StyleSlider(replay_duration_slider_, accent_brush_, success_brush_, accent_dark_brush);
-    replay_duration_slider_.Minimum(15);
-    replay_duration_slider_.Maximum(1200);
-    replay_duration_slider_.StepFrequency(15);
+    auto replay_duration_control = controls.RangeSlider(15, 1200, 15, 60);
+    replay_duration_slider_ = replay_duration_control.input;
     replay_duration_slider_.ValueChanged({this, &MainWindow::ReplayDurationSlider_ValueChanged});
-    auto replay_duration_slider_control = SliderWithTrack(replay_duration_slider_, accent_brush_);
+    auto replay_duration_slider_control = replay_duration_control.view;
     replay_duration_slider_control.Margin(Thickness{0, 4, 0, 16});
     video_section.Children().Append(replay_duration_slider_control);
 
-    quality_selector_ = ComboBox{};
-    StyleInput(quality_selector_);
-    quality_selector_.HorizontalAlignment(HorizontalAlignment::Stretch);
-    quality_selector_.Items().Append(ComboItem(L"Производительность"));
-    quality_selector_.Items().Append(ComboItem(L"Сбалансированный"));
-    quality_selector_.Items().Append(ComboItem(L"Высокое качество"));
+    quality_selector_ = controls.Select();
+    quality_selector_.Items().Append(controls.Option(L"Производительность"));
+    quality_selector_.Items().Append(controls.Option(L"Сбалансированный"));
+    quality_selector_.Items().Append(controls.Option(L"Высокое качество"));
     quality_selector_.SelectionChanged({this, &MainWindow::QualitySelector_SelectionChanged});
     add_field(video_section, quality_label_, L"Пресет качества", quality_selector_);
     quality_description_ = Text(L"Баланс качества сжатия и нагрузки на GPU. Битрейт задаётся отдельно.", 11.5,
@@ -883,13 +663,10 @@ void MainWindow::BuildUi() {
     bitrate_header.Children().Append(bitrate_value_);
     video_section.Children().Append(bitrate_header);
 
-    bitrate_slider_ = Slider{};
-    StyleSlider(bitrate_slider_, accent_brush_, success_brush_, accent_dark_brush);
-    bitrate_slider_.Minimum(4);
-    bitrate_slider_.Maximum(120);
-    bitrate_slider_.StepFrequency(1);
+    auto bitrate_control = controls.RangeSlider(4, 120, 1, 24);
+    bitrate_slider_ = bitrate_control.input;
     bitrate_slider_.ValueChanged({this, &MainWindow::BitrateSlider_ValueChanged});
-    auto bitrate_slider_control = SliderWithTrack(bitrate_slider_, accent_brush_);
+    auto bitrate_slider_control = bitrate_control.view;
     bitrate_slider_control.Margin(Thickness{0, 4, 0, 16});
     video_section.Children().Append(bitrate_slider_control);
 
@@ -916,30 +693,24 @@ void MainWindow::BuildUi() {
     replay_estimate.Child(estimate_content);
     video_section.Children().Append(replay_estimate);
 
-    codec_selector_ = ComboBox{};
-    StyleInput(codec_selector_);
-    codec_selector_.HorizontalAlignment(HorizontalAlignment::Stretch);
-    codec_selector_.Items().Append(ComboItem(L"H.264"));
-    codec_selector_.Items().Append(ComboItem(L"HEVC"));
-    codec_selector_.Items().Append(ComboItem(L"AV1"));
+    codec_selector_ = controls.Select();
+    codec_selector_.Items().Append(controls.Option(L"H.264"));
+    codec_selector_.Items().Append(controls.Option(L"HEVC"));
+    codec_selector_.Items().Append(controls.Option(L"AV1"));
     codec_selector_.SelectionChanged([this](auto&&, auto&&) { ScheduleSettingsApply(); });
     add_field(video_section, codec_label_, L"Кодек", codec_selector_);
 
-    fps_selector_ = ComboBox{};
-    StyleInput(fps_selector_);
-    fps_selector_.HorizontalAlignment(HorizontalAlignment::Stretch);
-    fps_selector_.Items().Append(ComboItem(L"30 FPS"));
-    fps_selector_.Items().Append(ComboItem(L"60 FPS"));
+    fps_selector_ = controls.Select();
+    fps_selector_.Items().Append(controls.Option(L"30 FPS"));
+    fps_selector_.Items().Append(controls.Option(L"60 FPS"));
     fps_selector_.SelectionChanged([this](auto&&, auto&&) { ScheduleSettingsApply(); });
     add_field(video_section, fps_label_, L"Частота кадров", fps_selector_);
 
     const auto input_section = create_section(input_section_title_, L"ИНТЕРФЕЙС И ВВОД");
 
-    language_selector_ = ComboBox{};
-    StyleInput(language_selector_);
-    language_selector_.HorizontalAlignment(HorizontalAlignment::Stretch);
-    language_selector_.Items().Append(ComboItem(L"Русский"));
-    language_selector_.Items().Append(ComboItem(L"English"));
+    language_selector_ = controls.Select();
+    language_selector_.Items().Append(controls.Option(L"Русский"));
+    language_selector_.Items().Append(controls.Option(L"English"));
     language_selector_.SelectionChanged([this](auto&&, auto&&) { ScheduleSettingsApply(); });
     add_field(input_section, language_label_, L"Язык", language_selector_);
 
@@ -960,19 +731,13 @@ void MainWindow::BuildUi() {
         input_section.Children().Append(row);
     };
 
-    microphone_toggle_ = ToggleSwitch{};
-    StyleToggle(microphone_toggle_, accent_brush_, success_brush_, accent_dark_brush,
-                primary_text_brush, quiet_button_brush, muted_brush);
+    microphone_toggle_ = controls.Toggle();
     microphone_toggle_.Toggled({this, &MainWindow::EstimateInput_Toggled});
     add_toggle_row(microphone_label_, L"Микрофон", microphone_toggle_);
-    cursor_toggle_ = ToggleSwitch{};
-    StyleToggle(cursor_toggle_, accent_brush_, success_brush_, accent_dark_brush,
-                primary_text_brush, quiet_button_brush, muted_brush);
+    cursor_toggle_ = controls.Toggle();
     add_toggle_row(cursor_label_, L"Захватывать курсор", cursor_toggle_);
     cursor_toggle_.Toggled([this](auto&&, auto&&) { ScheduleSettingsApply(); });
-    start_with_windows_toggle_ = ToggleSwitch{};
-    StyleToggle(start_with_windows_toggle_, accent_brush_, success_brush_, accent_dark_brush,
-                primary_text_brush, quiet_button_brush, muted_brush);
+    start_with_windows_toggle_ = controls.Toggle();
     add_toggle_row(start_with_windows_label_, L"Запускать вместе с Windows", start_with_windows_toggle_);
     start_with_windows_toggle_.Toggled([this](auto&&, auto&&) { ScheduleSettingsApply(); });
 
@@ -995,18 +760,13 @@ void MainWindow::BuildUi() {
     replay_hotkeys_panel_ = StackPanel{};
     replay_hotkeys_panel_.Spacing(8);
     shortcuts_content.Children().Append(replay_hotkeys_panel_);
-    replay_hotkey_add_button_ = ActionButton(L"+ Добавить хоткей", quiet_button_brush, primary_text_brush);
+    replay_hotkey_add_button_ = controls.ActionButton(L"+ Добавить хоткей");
     replay_hotkey_add_button_.MinHeight(36);
     replay_hotkey_add_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
     replay_hotkey_add_button_.Click({this, &MainWindow::ReplayHotkeyAdd_Click});
     shortcuts_content.Children().Append(replay_hotkey_add_button_);
 
-    Border recording_shortcut_surface;
-    recording_shortcut_surface.Background(Brush(0xFF202023));
-    recording_shortcut_surface.BorderBrush(card_border_brush);
-    recording_shortcut_surface.BorderThickness(Thickness{1, 1, 1, 1});
-    recording_shortcut_surface.CornerRadius(CornerRadius{8, 8, 8, 8});
-    recording_shortcut_surface.Padding(Thickness{12, 12, 12, 12});
+    auto recording_shortcut_surface = controls.ShortcutSurface();
     StackPanel recording_shortcut_block;
     recording_shortcut_block.Spacing(10);
     Grid recording_shortcut_header;
@@ -1017,9 +777,7 @@ void MainWindow::BuildUi() {
     recording_hotkey_label_.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
     recording_hotkey_label_.VerticalAlignment(VerticalAlignment::Center);
     recording_shortcut_header.Children().Append(recording_hotkey_label_);
-    recording_hotkey_toggle_ = ToggleSwitch{};
-    StyleToggle(recording_hotkey_toggle_, accent_brush_, success_brush_, accent_dark_brush,
-                primary_text_brush, quiet_button_brush, muted_brush);
+    recording_hotkey_toggle_ = controls.Toggle();
     recording_hotkey_toggle_.VerticalAlignment(VerticalAlignment::Center);
     recording_hotkey_toggle_.Toggled([this](auto&&, auto&&) {
         if (updating_ui_) return;
@@ -1029,14 +787,7 @@ void MainWindow::BuildUi() {
     Grid::SetColumn(recording_hotkey_toggle_, 1);
     recording_shortcut_header.Children().Append(recording_hotkey_toggle_);
     recording_shortcut_block.Children().Append(recording_shortcut_header);
-    recording_hotkey_input_ = TextBox{};
-    StyleInput(recording_hotkey_input_);
-    recording_hotkey_input_.Height(36);
-    recording_hotkey_input_.MinHeight(36);
-    recording_hotkey_input_.Padding(Thickness{12, 0, 12, 0});
-    CenterSingleLineInput(recording_hotkey_input_);
-    recording_hotkey_input_.IsReadOnly(true);
-    recording_hotkey_input_.PlaceholderText(L"Нажмите сочетание");
+    recording_hotkey_input_ = controls.HotkeyInput(L"Нажмите сочетание");
     recording_hotkey_input_.KeyDown({this, &MainWindow::RecordingHotkey_KeyDown});
     recording_hotkey_input_.LostFocus([this](auto&&, auto&&) {
         ValidateHotkeys(true, false);
@@ -1050,12 +801,7 @@ void MainWindow::BuildUi() {
     recording_shortcut_surface.Child(recording_shortcut_block);
     shortcuts_content.Children().Append(recording_shortcut_surface);
 
-    Border screenshot_surface;
-    screenshot_surface.Background(Brush(0xFF202023));
-    screenshot_surface.BorderBrush(card_border_brush);
-    screenshot_surface.BorderThickness(Thickness{1, 1, 1, 1});
-    screenshot_surface.CornerRadius(CornerRadius{8, 8, 8, 8});
-    screenshot_surface.Padding(Thickness{12, 12, 12, 12});
+    auto screenshot_surface = controls.ShortcutSurface();
     StackPanel screenshot_block;
     screenshot_block.Spacing(10);
     Grid screenshot_shortcut_header;
@@ -1066,9 +812,7 @@ void MainWindow::BuildUi() {
     screenshot_hotkey_label_.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
     screenshot_hotkey_label_.VerticalAlignment(VerticalAlignment::Center);
     screenshot_shortcut_header.Children().Append(screenshot_hotkey_label_);
-    screenshot_hotkey_toggle_ = ToggleSwitch{};
-    StyleToggle(screenshot_hotkey_toggle_, accent_brush_, success_brush_, accent_dark_brush,
-                primary_text_brush, quiet_button_brush, muted_brush);
+    screenshot_hotkey_toggle_ = controls.Toggle();
     screenshot_hotkey_toggle_.VerticalAlignment(VerticalAlignment::Center);
     screenshot_hotkey_toggle_.Toggled([this](auto&&, auto&&) {
         if (updating_ui_) return;
@@ -1078,14 +822,7 @@ void MainWindow::BuildUi() {
     Grid::SetColumn(screenshot_hotkey_toggle_, 1);
     screenshot_shortcut_header.Children().Append(screenshot_hotkey_toggle_);
     screenshot_block.Children().Append(screenshot_shortcut_header);
-    screenshot_hotkey_input_ = TextBox{};
-    StyleInput(screenshot_hotkey_input_);
-    screenshot_hotkey_input_.Height(36);
-    screenshot_hotkey_input_.MinHeight(36);
-    screenshot_hotkey_input_.Padding(Thickness{12, 0, 12, 0});
-    CenterSingleLineInput(screenshot_hotkey_input_);
-    screenshot_hotkey_input_.IsReadOnly(true);
-    screenshot_hotkey_input_.PlaceholderText(L"Нажмите сочетание");
+    screenshot_hotkey_input_ = controls.HotkeyInput(L"Нажмите сочетание");
     screenshot_hotkey_input_.KeyDown({this, &MainWindow::ScreenshotHotkey_KeyDown});
     screenshot_hotkey_input_.LostFocus([this](auto&&, auto&&) {
         ValidateHotkeys(true, false);
@@ -1130,10 +867,9 @@ void MainWindow::BuildUi() {
     performance_position_label_ = Text(L"Положение", 12, primary_text_brush);
     performance_position_label_.VerticalAlignment(VerticalAlignment::Center);
     position_row.Children().Append(performance_position_label_);
-    performance_position_selector_ = ComboBox{};
-    StyleInput(performance_position_selector_);
-    performance_position_selector_.Items().Append(ComboItem(L"Справа сверху"));
-    performance_position_selector_.Items().Append(ComboItem(L"Справа снизу"));
+    performance_position_selector_ = controls.Select();
+    performance_position_selector_.Items().Append(controls.Option(L"Справа сверху"));
+    performance_position_selector_.Items().Append(controls.Option(L"Справа снизу"));
     performance_position_selector_.SelectedIndex(0);
     performance_position_selector_.SelectionChanged([this](auto&&, auto&&) { ScheduleSettingsApply(); });
     Grid::SetColumn(performance_position_selector_, 1);
@@ -1149,27 +885,19 @@ void MainWindow::BuildUi() {
     Grid::SetColumn(performance_opacity_value_, 1);
     opacity_header.Children().Append(performance_opacity_value_);
     performance_content.Children().Append(opacity_header);
-    performance_opacity_slider_ = Slider{};
-    performance_opacity_slider_.Minimum(55);
-    performance_opacity_slider_.Maximum(100);
-    performance_opacity_slider_.StepFrequency(1);
-    performance_opacity_slider_.Value(92);
-    performance_opacity_slider_.Margin(Thickness{0, 0, 0, 2});
-    StyleSlider(performance_opacity_slider_, accent_brush_, success_brush_, accent_dark_brush);
+    auto performance_opacity_control = controls.RangeSlider(55, 100, 1, 92);
+    performance_opacity_slider_ = performance_opacity_control.input;
+    performance_opacity_control.view.Margin(Thickness{0, 0, 0, 2});
     performance_opacity_slider_.ValueChanged([this](auto&&, auto const& args) {
         if (performance_opacity_value_) {
             performance_opacity_value_.Text(std::to_wstring(static_cast<unsigned int>(std::lround(args.NewValue()))) + L"%");
         }
         ScheduleSettingsApply();
     });
-    performance_content.Children().Append(performance_opacity_slider_);
+    performance_content.Children().Append(performance_opacity_control.view);
 
     const auto metric_check = [&](const StackPanel& parent, std::wstring_view label, CheckBox& target) {
-        target = CheckBox{};
-        target.Content(winrt::box_value(winrt::hstring{label}));
-        target.FontFamily(PublicSans());
-        target.FontSize(12);
-        target.IsChecked(true);
+        target = controls.Check(label);
         target.Click([this](auto&&, auto&&) {
             UpdatePerformanceOverlaySummary();
             ScheduleSettingsApply();
@@ -1205,11 +933,9 @@ void MainWindow::BuildUi() {
 
     const auto storage_section = create_section(storage_section_title_, L"ХРАНИЛИЩЕ");
 
-    output_format_selector_ = ComboBox{};
-    StyleInput(output_format_selector_);
-    output_format_selector_.HorizontalAlignment(HorizontalAlignment::Stretch);
-    output_format_selector_.Items().Append(ComboItem(L"MKV"));
-    output_format_selector_.Items().Append(ComboItem(L"MP4"));
+    output_format_selector_ = controls.Select();
+    output_format_selector_.Items().Append(controls.Option(L"MKV"));
+    output_format_selector_.Items().Append(controls.Option(L"MP4"));
     output_format_selector_.SelectionChanged({this, &MainWindow::OutputFormatSelector_SelectionChanged});
     add_field(storage_section, output_format_label_, L"Формат видео", output_format_selector_);
     output_format_description_ = Text(L"Широко совместим с приложениями и видеоредакторами.", 11.5,
@@ -1234,10 +960,10 @@ void MainWindow::BuildUi() {
     storage_space_text_ = Text(L"Свободно: проверка...", 11.5, secondary_text_brush_);
     storage_space_text_.Margin(Thickness{0, -8, 0, 14});
     storage_section.Children().Append(storage_space_text_);
-    open_folder_button_ = ActionButton(L"Открыть папку", quiet_button_brush, primary_text_brush);
+    open_folder_button_ = controls.ActionButton(L"Открыть папку");
     open_folder_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
     open_folder_button_.Click({this, &MainWindow::OpenFolder_Click});
-    open_logs_button_ = ActionButton(L"Открыть логи", quiet_button_brush, primary_text_brush);
+    open_logs_button_ = controls.ActionButton(L"Открыть логи");
     open_logs_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
     open_logs_button_.Click({this, &MainWindow::OpenLogs_Click});
     Grid storage_actions;
@@ -1268,9 +994,7 @@ void MainWindow::BuildUi() {
     automatic_updates_label_ = Text(L"Check and download automatically", 12.5, primary_text_brush);
     automatic_updates_label_.VerticalAlignment(VerticalAlignment::Center);
     automatic_updates_row.Children().Append(automatic_updates_label_);
-    automatic_updates_toggle_ = ToggleSwitch{};
-    StyleToggle(automatic_updates_toggle_, accent_brush_, success_brush_, accent_dark_brush,
-                primary_text_brush, quiet_button_brush, muted_brush);
+    automatic_updates_toggle_ = controls.Toggle();
     automatic_updates_toggle_.HorizontalAlignment(HorizontalAlignment::Right);
     automatic_updates_toggle_.Toggled([this](auto&&, auto&&) {
         if (updating_ui_) return;
@@ -1284,18 +1008,18 @@ void MainWindow::BuildUi() {
     Grid update_actions;
     AddColumn(update_actions, 1, GridUnitType::Star);
     AddColumn(update_actions, 1, GridUnitType::Star);
-    check_update_button_ = ActionButton(L"Check now", quiet_button_brush, primary_text_brush);
+    check_update_button_ = controls.ActionButton(L"Check now");
     check_update_button_.Margin(Thickness{0, 0, 6, 0});
     check_update_button_.Click({this, &MainWindow::CheckUpdate_Click});
     update_actions.Children().Append(check_update_button_);
-    update_action_button_ = ActionButton(L"Download update", accent_brush_, near_black_green_brush);
+    update_action_button_ = controls.ActionButton(L"Download update", ButtonKind::Accent);
     update_action_button_.Margin(Thickness{6, 0, 0, 0});
     update_action_button_.Visibility(Visibility::Collapsed);
     update_action_button_.Click({this, &MainWindow::UpdateAction_Click});
     Grid::SetColumn(update_action_button_, 1);
     update_actions.Children().Append(update_action_button_);
     updates_section.Children().Append(update_actions);
-    release_notes_button_ = ActionButton(L"Release notes", quiet_button_brush, primary_text_brush);
+    release_notes_button_ = controls.ActionButton(L"Release notes");
     release_notes_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
     release_notes_button_.Margin(Thickness{0, 8, 0, 0});
     release_notes_button_.Visibility(Visibility::Collapsed);
@@ -1460,20 +1184,14 @@ void MainWindow::RebuildReplayHotkeyRows() {
     replay_hotkey_toggles_.clear();
     replay_hotkey_remove_buttons_.clear();
 
-    const auto primary = Brush(0xFFFFFFFF);
-    const auto quiet = Brush(0xFF3F3F46);
-    const auto muted = Brush(0xFF71717A);
-    const auto accent_dark = Brush(0xFF007F45);
+    const auto theme = DarkTheme();
+    const ControlFactory controls{theme};
+    const auto primary = theme.primary_text;
     if (replay_hotkey_draft_.empty()) replay_hotkey_draft_.push_back({false, {}, 15});
 
     for (std::size_t index = 0; index < replay_hotkey_draft_.size(); ++index) {
         const auto& binding = replay_hotkey_draft_[index];
-        Border surface;
-        surface.Background(Brush(0xFF202023));
-        surface.BorderBrush(Brush(0xFF3F3F46));
-        surface.BorderThickness(Thickness{1, 1, 1, 1});
-        surface.CornerRadius(CornerRadius{8, 8, 8, 8});
-        surface.Padding(Thickness{12, 12, 12, 12});
+        auto surface = controls.ShortcutSurface();
 
         StackPanel block;
         block.Spacing(10);
@@ -1489,8 +1207,7 @@ void MainWindow::RebuildReplayHotkeyRows() {
         header.Children().Append(label);
         replay_hotkey_labels_.push_back(label);
 
-        ToggleSwitch toggle;
-        StyleToggle(toggle, accent_brush_, success_brush_, accent_dark, primary, quiet, muted);
+        auto toggle = controls.Toggle();
         toggle.VerticalAlignment(VerticalAlignment::Center);
         toggle.IsOn(binding.enabled);
         toggle.Toggled([this](auto&&, auto&&) {
@@ -1501,7 +1218,7 @@ void MainWindow::RebuildReplayHotkeyRows() {
         header.Children().Append(toggle);
         replay_hotkey_toggles_.push_back(toggle);
 
-        auto remove = ActionButton(L"×", quiet, primary);
+        auto remove = controls.ActionButton(L"×");
         remove.Width(20);
         remove.Height(20);
         remove.MinWidth(20);
@@ -1526,29 +1243,13 @@ void MainWindow::RebuildReplayHotkeyRows() {
         AddColumn(row, 8, GridUnitType::Pixel);
         AddColumn(row, 82, GridUnitType::Pixel);
         AddColumn(row, 26, GridUnitType::Pixel);
-        TextBox input;
-        StyleInput(input);
-        input.Height(36);
-        input.MinHeight(36);
-        input.Padding(Thickness{12, 0, 12, 0});
-        CenterSingleLineInput(input);
-        input.IsReadOnly(true);
+        auto input = controls.HotkeyInput(english_ ? L"Press shortcut" : L"Нажмите сочетание");
         input.Text(openreplay::FromUtf8(binding.chord));
-        input.PlaceholderText(english_ ? L"Press shortcut" : L"Нажмите сочетание");
         input.KeyDown({this, &MainWindow::ReplayHotkey_KeyDown});
         row.Children().Append(input);
         replay_hotkey_inputs_.push_back(input);
 
-        NumberBox duration;
-        StyleInput(duration);
-        duration.Height(36);
-        duration.MinHeight(36);
-        duration.Padding(Thickness{10, 0, 4, 0});
-        CenterSingleLineInput(duration);
-        duration.Minimum(15);
-        duration.Maximum(1200);
-        duration.SmallChange(15);
-        duration.SpinButtonPlacementMode(NumberBoxSpinButtonPlacementMode::Compact);
+        auto duration = controls.NumberInput(15, 1200, 15);
         duration.Value(binding.replay_seconds);
         duration.ValueChanged([this](auto&&, auto&&) { ScheduleSettingsApply(); });
         Grid::SetColumn(duration, 2);
@@ -1942,6 +1643,7 @@ void MainWindow::EnumerateAudioDevices() {
                                    const std::vector<openreplay::AudioDeviceConfig>& selected) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
+        const ControlFactory factory{DarkTheme()};
         panel.Children().Clear();
         ids.clear();
         names.clear();
@@ -1970,18 +1672,11 @@ void MainWindow::EnumerateAudioDevices() {
         devices.insert(devices.begin(), {"default", default_label,
             configured_default ? configured_default->name : std::string{}, true});
         for (const auto& device : devices) {
-            Border surface;
-            surface.Background(Brush(0xFF202023));
-            surface.CornerRadius(CornerRadius{7, 7, 7, 7});
-            surface.Padding(Thickness{9, 7, 9, 7});
+            auto surface = factory.AudioDeviceSurface();
             StackPanel content;
             content.Spacing(4);
-            CheckBox check;
-            check.FontFamily(PublicSans());
-            check.FontSize(12.5);
-            check.Content(winrt::box_value(winrt::hstring{device.name}));
             const auto configured = FindDevice(selected, device.id);
-            check.IsChecked(configured != nullptr);
+            auto check = factory.Check(device.name, configured != nullptr, 12.5);
             check.Checked({this, &MainWindow::AudioDeviceSelection_Changed});
             check.Unchecked({this, &MainWindow::AudioDeviceSelection_Changed});
             content.Children().Append(check);
@@ -2009,17 +1704,14 @@ void MainWindow::EnumerateAudioDevices() {
             level_grid.Children().Append(level_fill);
             level_track.Child(level_grid);
             controls.Children().Append(level_track);
-            Slider volume;
-            volume.Minimum(0);
-            volume.Maximum(100);
-            volume.StepFrequency(1);
-            volume.Value(configured ? configured->volume_percent : 100);
-            volume.MinHeight(32);
-            volume.VerticalAlignment(VerticalAlignment::Center);
+            auto volume_control = factory.RangeSlider(
+                0, 100, 1, configured ? configured->volume_percent : 100);
+            auto volume = volume_control.input;
+            volume_control.view.MinHeight(32);
+            volume_control.view.VerticalAlignment(VerticalAlignment::Center);
             volume.IsEnabled(configured != nullptr);
-            StyleSlider(volume, accent_brush_, success_brush_, Brush(0xFF007F45));
-            Grid::SetColumn(volume, 2);
-            controls.Children().Append(volume);
+            Grid::SetColumn(volume_control.view, 2);
+            controls.Children().Append(volume_control.view);
             auto value = Text(std::to_wstring(static_cast<std::uint32_t>(std::lround(volume.Value()))) + L"%",
                               10.5, secondary_text_brush_);
             value.VerticalAlignment(VerticalAlignment::Center);
@@ -2105,8 +1797,8 @@ BOOL CALLBACK MainWindow::MonitorCallback(HMONITOR monitor, HDC, LPRECT, LPARAM 
     label += L"  ·  " + std::to_wstring(width) + L" × " + std::to_wstring(height);
     if ((monitor_info.dwFlags & MONITORINFOF_PRIMARY) != 0) label += self->english_ ? L"  (Primary)" : L"  (Основной)";
 
-    auto item = ComboBoxItem{};
-    item.Content(winrt::box_value(winrt::hstring{label}));
+    const ControlFactory controls{DarkTheme()};
+    auto item = controls.Option(label);
     self->MonitorSelector().Items().Append(item);
     self->monitor_ids_.push_back(openreplay::ToUtf8(id));
     return TRUE;

@@ -4,9 +4,11 @@
 
 #include <windows.h>
 
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace openreplay::ui {
 
@@ -27,9 +29,16 @@ public:
 
 private:
     struct Sample {
+        std::optional<double> fps;
+        std::optional<double> fps_low_1;
+        std::optional<double> fps_low_01;
+        std::optional<double> frame_time_ms;
+        std::vector<double> frame_times;
+        std::string frame_error;
         std::optional<unsigned int> gpu_percent;
         std::optional<unsigned int> gpu_temperature_c;
         std::optional<unsigned int> gpu_clock_mhz;
+        std::optional<unsigned int> gpu_power_mw;
         std::optional<std::uint64_t> gpu_memory_used;
         std::optional<std::uint64_t> gpu_memory_total;
         std::optional<unsigned int> cpu_percent;
@@ -57,6 +66,7 @@ private:
     using NvmlDeviceGetTemperature = int(__cdecl*)(NvmlDeviceHandle, int, unsigned int*);
     using NvmlDeviceGetClockInfo = int(__cdecl*)(NvmlDeviceHandle, int, unsigned int*);
     using NvmlDeviceGetMemoryInfo = int(__cdecl*)(NvmlDeviceHandle, NvmlMemory*);
+    using NvmlDeviceGetPowerUsage = int(__cdecl*)(NvmlDeviceHandle, unsigned int*);
 
     static constexpr UINT_PTR kRefreshTimer = 1;
     static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
@@ -64,11 +74,16 @@ private:
     bool InitializeNvml();
     void ShutdownNvml() noexcept;
     void SampleMetrics();
+    void SampleSystemMetrics();
+    void SampleFrameMetrics();
     void SampleNvml();
     void SampleCpuAndMemory();
     void SampleDxgiMemory();
     void Show();
     void Hide();
+    void StartTelemetry();
+    void StopTelemetry() noexcept;
+    [[nodiscard]] std::string TelemetryCommand(std::string_view command) const;
     void PositionWindow();
     void Paint(HDC dc, const RECT& bounds);
     [[nodiscard]] int EnabledMetricCount() const noexcept;
@@ -89,10 +104,16 @@ private:
     NvmlDeviceGetTemperature nvml_get_temperature_{nullptr};
     NvmlDeviceGetClockInfo nvml_get_clock_{nullptr};
     NvmlDeviceGetMemoryInfo nvml_get_memory_{nullptr};
+    NvmlDeviceGetPowerUsage nvml_get_power_{nullptr};
     std::chrono::steady_clock::time_point next_nvml_retry_{};
     std::uint64_t previous_idle_{0};
     std::uint64_t previous_kernel_{0};
     std::uint64_t previous_user_{0};
+    HANDLE telemetry_process_{nullptr};
+    DWORD telemetry_target_process_{0};
+    DWORD telemetry_pending_process_{0};
+    bool telemetry_launch_attempted_{false};
+    unsigned int refresh_tick_{0};
 };
 
 }  // namespace openreplay::ui

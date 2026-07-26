@@ -8,6 +8,12 @@ Notable user-facing changes are documented here. Development builds use the
 ### Changed
 
 - Reduced replay-save latency by removing unnecessary MP4 fast-start rewriting and using realtime NVENC presets.
+- Rebuilt the performance overlay as a live dashboard with no-admin foreground-window frame telemetry and a frametime graph.
+- Made the frametime graph use high-precision samples, adaptive scaling, raw sample dots, and a readable local trend.
+
+### Added
+
+- Added compositor-delivered FPS, 1% low, 0.1% low, frametime, GPU power, and configurable graph metrics to the performance overlay.
 
 ### Fixed
 

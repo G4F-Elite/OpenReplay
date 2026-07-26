@@ -60,9 +60,14 @@ struct Settings {
     QualityPreset quality_preset{QualityPreset::Balanced};
     OutputFormat output_format{OutputFormat::Mp4};
     PerformanceOverlayPosition performance_overlay_position{PerformanceOverlayPosition::TopRight};
+    bool performance_show_fps{true};
+    bool performance_show_fps_lows{true};
+    bool performance_show_frametime{true};
+    bool performance_show_frametime_graph{true};
     bool performance_show_gpu_usage{true};
     bool performance_show_gpu_temperature{true};
     bool performance_show_gpu_clock{true};
+    bool performance_show_gpu_power{true};
     bool performance_show_gpu_memory{true};
     bool performance_show_cpu_usage{true};
     bool performance_show_memory{true};

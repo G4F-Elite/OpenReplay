@@ -12,6 +12,8 @@ Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "OpenReplay.UnitTests", "tes
 EndProject
 Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "OpenReplay.Updater", "src\Updater\OpenReplay.Updater.vcxproj", "{E5EB81A4-15CB-4E22-8D5A-976B345D71A5}"
 EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "OpenReplay.Telemetry", "src\Telemetry\OpenReplay.Telemetry.vcxproj", "{F6FC92B5-26DC-48FE-9E6E-A27C8FB249C6}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -38,6 +40,10 @@ Global
 		{E5EB81A4-15CB-4E22-8D5A-976B345D71A5}.Debug|x64.Build.0 = Debug|x64
 		{E5EB81A4-15CB-4E22-8D5A-976B345D71A5}.Release|x64.ActiveCfg = Release|x64
 		{E5EB81A4-15CB-4E22-8D5A-976B345D71A5}.Release|x64.Build.0 = Release|x64
+		{F6FC92B5-26DC-48FE-9E6E-A27C8FB249C6}.Debug|x64.ActiveCfg = Debug|x64
+		{F6FC92B5-26DC-48FE-9E6E-A27C8FB249C6}.Debug|x64.Build.0 = Debug|x64
+		{F6FC92B5-26DC-48FE-9E6E-A27C8FB249C6}.Release|x64.ActiveCfg = Release|x64
+		{F6FC92B5-26DC-48FE-9E6E-A27C8FB249C6}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

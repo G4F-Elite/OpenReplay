@@ -66,6 +66,7 @@ Run OpenReplay.App.exe. No OBS Studio installation is required.
 $required = @(
     'OpenReplay.App.exe',
     'OpenReplay.Host.exe',
+    'OpenReplay.Telemetry.exe',
     'OpenReplay.Updater.exe',
     'OpenReplay.App.pri',
     'App.xbf',

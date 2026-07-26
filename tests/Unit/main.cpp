@@ -45,8 +45,11 @@ void SettingsRoundTrip() {
     settings.bitrate_kbps = 42000;
     settings.output_format = openreplay::OutputFormat::Mp4;
     settings.performance_overlay_position = openreplay::PerformanceOverlayPosition::BottomRight;
+    settings.performance_show_fps_lows = false;
+    settings.performance_show_frametime_graph = false;
     settings.performance_show_gpu_temperature = false;
     settings.performance_show_gpu_clock = false;
+    settings.performance_show_gpu_power = false;
     settings.performance_show_memory = false;
     settings.performance_overlay_opacity = 78;
     settings.desktop_audio_devices = {{"output-one", "Speakers", 75}, {"output-two", "Headset", 20}};
@@ -68,9 +71,11 @@ void SettingsRoundTrip() {
     Check(loaded.output_format == openreplay::OutputFormat::Mp4, "output format did not round-trip");
     Check(loaded.performance_overlay_position == openreplay::PerformanceOverlayPosition::BottomRight,
           "performance overlay position did not round-trip");
-    Check(!loaded.performance_show_gpu_temperature && !loaded.performance_show_gpu_clock &&
-              !loaded.performance_show_memory && loaded.performance_overlay_opacity == 78,
-          "performance overlay settings did not round-trip");
+    Check(!loaded.performance_show_fps_lows && !loaded.performance_show_frametime_graph &&
+              !loaded.performance_show_gpu_temperature && !loaded.performance_show_gpu_clock &&
+              !loaded.performance_show_gpu_power && !loaded.performance_show_memory &&
+              loaded.performance_overlay_opacity == 78,
+           "performance overlay settings did not round-trip");
     Check(loaded.desktop_audio_devices == settings.desktop_audio_devices, "desktop audio devices did not round-trip");
     Check(loaded.microphone_devices == settings.microphone_devices, "microphone devices did not round-trip");
     Check(loaded.replay_hotkeys[0].chord == "Ctrl+F8" && loaded.replay_hotkeys[0].replay_seconds == 45,
@@ -310,15 +315,20 @@ void RecordingHotkeyNormalizes() {
 
 void PerformanceOverlaySettingsNormalize() {
     openreplay::Settings settings;
+    settings.performance_show_fps = false;
+    settings.performance_show_fps_lows = false;
+    settings.performance_show_frametime = false;
+    settings.performance_show_frametime_graph = false;
     settings.performance_show_gpu_usage = false;
     settings.performance_show_gpu_temperature = false;
     settings.performance_show_gpu_clock = false;
+    settings.performance_show_gpu_power = false;
     settings.performance_show_gpu_memory = false;
     settings.performance_show_cpu_usage = false;
     settings.performance_show_memory = false;
     settings.performance_overlay_opacity = 20;
     settings.Normalize();
-    Check(settings.performance_show_gpu_usage, "performance overlay allowed an empty metric list");
+    Check(settings.performance_show_fps, "performance overlay allowed an empty metric list");
     Check(settings.performance_overlay_opacity == 55, "performance overlay opacity was not clamped");
 }
 

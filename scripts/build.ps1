@@ -34,5 +34,9 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & "$PSScriptRoot\deploy-obs-runtime.ps1" -Configuration $Configuration
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+$output = "$PSScriptRoot\..\artifacts\bin\x64\$Configuration"
+Remove-Item -LiteralPath (Join-Path $output 'PresentMon.exe') -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $output 'licenses\PresentMon-MIT.txt') -Force -ErrorAction SilentlyContinue
+
 & "$PSScriptRoot\..\artifacts\bin\x64\$Configuration\OpenReplay.UnitTests.exe"
 exit $LASTEXITCODE

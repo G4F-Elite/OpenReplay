@@ -851,7 +851,7 @@ void MainWindow::BuildUi() {
     performance_overlay_label_ = Text(L"Оверлей производительности", 12.5, secondary_text_brush_);
     performance_overlay_label_.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
     performance_header.Children().Append(performance_overlay_label_);
-    performance_overlay_summary_ = Text(L"Alt+R · 6 метрик", 11, success_brush_);
+    performance_overlay_summary_ = Text(L"Alt+R · 11 метрик", 11, success_brush_);
     performance_overlay_summary_.Margin(Thickness{10, 0, 4, 0});
     performance_overlay_summary_.VerticalAlignment(VerticalAlignment::Center);
     Grid::SetColumn(performance_overlay_summary_, 1);
@@ -911,9 +911,14 @@ void MainWindow::BuildUi() {
     gpu_metrics.Spacing(2);
     StackPanel system_metrics;
     system_metrics.Spacing(2);
+    metric_check(gpu_metrics, L"FPS", performance_fps_);
+    metric_check(gpu_metrics, L"1% / 0.1% FPS", performance_fps_lows_);
+    metric_check(gpu_metrics, L"Время кадра", performance_frametime_);
+    metric_check(gpu_metrics, L"График времени кадра", performance_frametime_graph_);
     metric_check(gpu_metrics, L"Загрузка GPU", performance_gpu_usage_);
     metric_check(gpu_metrics, L"Температура GPU", performance_gpu_temperature_);
     metric_check(gpu_metrics, L"Частота GPU", performance_gpu_clock_);
+    metric_check(system_metrics, L"Потребление GPU", performance_gpu_power_);
     metric_check(gpu_metrics, L"VRAM", performance_gpu_memory_);
     metric_check(system_metrics, L"Загрузка CPU", performance_cpu_usage_);
     metric_check(system_metrics, L"Оперативная память", performance_memory_);
@@ -1562,9 +1567,14 @@ void MainWindow::LoadSettingsIntoControls() {
     performance_position_selector_.SelectedIndex(
         settings_.performance_overlay_position == openreplay::PerformanceOverlayPosition::BottomRight ? 1 : 0);
     performance_opacity_slider_.Value(settings_.performance_overlay_opacity);
+    performance_fps_.IsChecked(settings_.performance_show_fps);
+    performance_fps_lows_.IsChecked(settings_.performance_show_fps_lows);
+    performance_frametime_.IsChecked(settings_.performance_show_frametime);
+    performance_frametime_graph_.IsChecked(settings_.performance_show_frametime_graph);
     performance_gpu_usage_.IsChecked(settings_.performance_show_gpu_usage);
     performance_gpu_temperature_.IsChecked(settings_.performance_show_gpu_temperature);
     performance_gpu_clock_.IsChecked(settings_.performance_show_gpu_clock);
+    performance_gpu_power_.IsChecked(settings_.performance_show_gpu_power);
     performance_gpu_memory_.IsChecked(settings_.performance_show_gpu_memory);
     performance_cpu_usage_.IsChecked(settings_.performance_show_cpu_usage);
     performance_memory_.IsChecked(settings_.performance_show_memory);
@@ -1854,9 +1864,14 @@ void MainWindow::ApplyLanguage() {
     set(performance_overlay_label_, english_ ? L"Performance overlay" : L"Оверлей производительности");
     set(performance_position_label_, english_ ? L"Position" : L"Положение");
     set(performance_opacity_label_, english_ ? L"Background opacity" : L"Прозрачность фона");
+    performance_fps_.Content(winrt::box_value(L"FPS"));
+    performance_fps_lows_.Content(winrt::box_value(L"1% / 0.1% FPS"));
+    performance_frametime_.Content(winrt::box_value(english_ ? L"Frame time" : L"Время кадра"));
+    performance_frametime_graph_.Content(winrt::box_value(english_ ? L"Frame-time graph" : L"График времени кадра"));
     performance_gpu_usage_.Content(winrt::box_value(english_ ? L"GPU usage" : L"Загрузка GPU"));
     performance_gpu_temperature_.Content(winrt::box_value(english_ ? L"GPU temperature" : L"Температура GPU"));
     performance_gpu_clock_.Content(winrt::box_value(english_ ? L"GPU clock" : L"Частота GPU"));
+    performance_gpu_power_.Content(winrt::box_value(english_ ? L"GPU power" : L"Потребление GPU"));
     performance_gpu_memory_.Content(winrt::box_value(L"VRAM"));
     performance_cpu_usage_.Content(winrt::box_value(english_ ? L"CPU usage" : L"Загрузка CPU"));
     performance_memory_.Content(winrt::box_value(english_ ? L"System memory" : L"Оперативная память"));
@@ -2412,9 +2427,14 @@ void MainWindow::UpdatePerformanceOverlaySummary() {
         const auto value = box.IsChecked();
         return value && value.Value();
     };
-    const auto count = static_cast<unsigned int>(checked(performance_gpu_usage_) +
-                                                  checked(performance_gpu_temperature_) +
-                                                  checked(performance_gpu_clock_) +
+    const auto count = static_cast<unsigned int>(checked(performance_fps_) +
+                                                   checked(performance_fps_lows_) +
+                                                   checked(performance_frametime_) +
+                                                   checked(performance_frametime_graph_) +
+                                                   checked(performance_gpu_usage_) +
+                                                   checked(performance_gpu_temperature_) +
+                                                   checked(performance_gpu_clock_) +
+                                                   checked(performance_gpu_power_) +
                                                   checked(performance_gpu_memory_) +
                                                   checked(performance_cpu_usage_) +
                                                   checked(performance_memory_));
@@ -3059,19 +3079,26 @@ bool MainWindow::ReadSettingsFromControls(openreplay::Settings& draft, bool show
         const auto value = box.IsChecked();
         return value && value.Value();
     };
+    draft.performance_show_fps = checked(performance_fps_);
+    draft.performance_show_fps_lows = checked(performance_fps_lows_);
+    draft.performance_show_frametime = checked(performance_frametime_);
+    draft.performance_show_frametime_graph = checked(performance_frametime_graph_);
     draft.performance_show_gpu_usage = checked(performance_gpu_usage_);
     draft.performance_show_gpu_temperature = checked(performance_gpu_temperature_);
     draft.performance_show_gpu_clock = checked(performance_gpu_clock_);
+    draft.performance_show_gpu_power = checked(performance_gpu_power_);
     draft.performance_show_gpu_memory = checked(performance_gpu_memory_);
     draft.performance_show_cpu_usage = checked(performance_cpu_usage_);
     draft.performance_show_memory = checked(performance_memory_);
-    if (!draft.performance_show_gpu_usage && !draft.performance_show_gpu_temperature &&
-        !draft.performance_show_gpu_clock && !draft.performance_show_gpu_memory &&
+    if (!draft.performance_show_fps && !draft.performance_show_fps_lows &&
+        !draft.performance_show_frametime && !draft.performance_show_frametime_graph &&
+        !draft.performance_show_gpu_usage && !draft.performance_show_gpu_temperature &&
+        !draft.performance_show_gpu_clock && !draft.performance_show_gpu_power && !draft.performance_show_gpu_memory &&
         !draft.performance_show_cpu_usage && !draft.performance_show_memory) {
         updating_ui_ = true;
-        performance_gpu_usage_.IsChecked(true);
+        performance_fps_.IsChecked(true);
         updating_ui_ = false;
-        draft.performance_show_gpu_usage = true;
+        draft.performance_show_fps = true;
         UpdatePerformanceOverlaySummary();
     }
     draft.microphone_enabled = MicrophoneToggle().IsOn();

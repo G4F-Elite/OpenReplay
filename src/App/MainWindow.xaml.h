@@ -371,9 +371,14 @@ private:
     Microsoft::UI::Xaml::Controls::TextBlock performance_opacity_value_{nullptr};
     Microsoft::UI::Xaml::Controls::ComboBox performance_position_selector_{nullptr};
     Microsoft::UI::Xaml::Controls::Slider performance_opacity_slider_{nullptr};
+    Microsoft::UI::Xaml::Controls::CheckBox performance_fps_{nullptr};
+    Microsoft::UI::Xaml::Controls::CheckBox performance_fps_lows_{nullptr};
+    Microsoft::UI::Xaml::Controls::CheckBox performance_frametime_{nullptr};
+    Microsoft::UI::Xaml::Controls::CheckBox performance_frametime_graph_{nullptr};
     Microsoft::UI::Xaml::Controls::CheckBox performance_gpu_usage_{nullptr};
     Microsoft::UI::Xaml::Controls::CheckBox performance_gpu_temperature_{nullptr};
     Microsoft::UI::Xaml::Controls::CheckBox performance_gpu_clock_{nullptr};
+    Microsoft::UI::Xaml::Controls::CheckBox performance_gpu_power_{nullptr};
     Microsoft::UI::Xaml::Controls::CheckBox performance_gpu_memory_{nullptr};
     Microsoft::UI::Xaml::Controls::CheckBox performance_cpu_usage_{nullptr};
     Microsoft::UI::Xaml::Controls::CheckBox performance_memory_{nullptr};

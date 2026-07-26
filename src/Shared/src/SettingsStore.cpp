@@ -125,12 +125,22 @@ Settings SettingsStore::Load() const {
     result.output_format = ParseOutputFormat(ParseString(values, "output_format", "mp4"));
     result.performance_overlay_position = ParsePerformanceOverlayPosition(
         ParseString(values, "performance_overlay_position", "top_right"));
+    result.performance_show_fps = ParseBool(
+        values, "performance_show_fps", result.performance_show_fps);
+    result.performance_show_fps_lows = ParseBool(
+        values, "performance_show_fps_lows", result.performance_show_fps_lows);
+    result.performance_show_frametime = ParseBool(
+        values, "performance_show_frametime", result.performance_show_frametime);
+    result.performance_show_frametime_graph = ParseBool(
+        values, "performance_show_frametime_graph", result.performance_show_frametime_graph);
     result.performance_show_gpu_usage = ParseBool(
         values, "performance_show_gpu_usage", result.performance_show_gpu_usage);
     result.performance_show_gpu_temperature = ParseBool(
         values, "performance_show_gpu_temperature", result.performance_show_gpu_temperature);
     result.performance_show_gpu_clock = ParseBool(
         values, "performance_show_gpu_clock", result.performance_show_gpu_clock);
+    result.performance_show_gpu_power = ParseBool(
+        values, "performance_show_gpu_power", result.performance_show_gpu_power);
     result.performance_show_gpu_memory = ParseBool(
         values, "performance_show_gpu_memory", result.performance_show_gpu_memory);
     result.performance_show_cpu_usage = ParseBool(
@@ -155,7 +165,7 @@ void SettingsStore::Save(const Settings& input) const {
     {
         std::ofstream output(temporary, std::ios::trunc);
         if (!output) throw std::runtime_error("Unable to open temporary settings file");
-        output << "version=8\n"
+        output << "version=9\n"
                << "instant_replay_enabled=" << (settings.instant_replay_enabled ? "true" : "false") << '\n'
                << "start_with_windows=" << (settings.start_with_windows ? "true" : "false") << '\n'
                << "automatic_updates=" << (settings.automatic_updates ? "true" : "false") << '\n'
@@ -198,9 +208,14 @@ void SettingsStore::Save(const Settings& input) const {
                << "quality_preset=" << ToString(settings.quality_preset) << '\n'
                << "output_format=" << ToString(settings.output_format) << '\n'
                << "performance_overlay_position=" << ToString(settings.performance_overlay_position) << '\n'
+               << "performance_show_fps=" << (settings.performance_show_fps ? "true" : "false") << '\n'
+               << "performance_show_fps_lows=" << (settings.performance_show_fps_lows ? "true" : "false") << '\n'
+               << "performance_show_frametime=" << (settings.performance_show_frametime ? "true" : "false") << '\n'
+               << "performance_show_frametime_graph=" << (settings.performance_show_frametime_graph ? "true" : "false") << '\n'
                << "performance_show_gpu_usage=" << (settings.performance_show_gpu_usage ? "true" : "false") << '\n'
                << "performance_show_gpu_temperature=" << (settings.performance_show_gpu_temperature ? "true" : "false") << '\n'
                << "performance_show_gpu_clock=" << (settings.performance_show_gpu_clock ? "true" : "false") << '\n'
+               << "performance_show_gpu_power=" << (settings.performance_show_gpu_power ? "true" : "false") << '\n'
                << "performance_show_gpu_memory=" << (settings.performance_show_gpu_memory ? "true" : "false") << '\n'
                << "performance_show_cpu_usage=" << (settings.performance_show_cpu_usage ? "true" : "false") << '\n'
                << "performance_show_memory=" << (settings.performance_show_memory ? "true" : "false") << '\n'

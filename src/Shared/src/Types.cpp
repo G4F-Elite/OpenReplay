@@ -83,9 +83,11 @@ void Settings::Normalize() {
     if (screenshot_hotkey_chord.empty()) screenshot_hotkey_enabled = false;
     if (recording_hotkey_chord.empty()) recording_hotkey_enabled = false;
     performance_overlay_opacity = std::clamp(performance_overlay_opacity, 55U, 100U);
-    if (!performance_show_gpu_usage && !performance_show_gpu_temperature && !performance_show_gpu_clock &&
+    if (!performance_show_fps && !performance_show_fps_lows && !performance_show_frametime &&
+        !performance_show_frametime_graph && !performance_show_gpu_usage &&
+        !performance_show_gpu_temperature && !performance_show_gpu_clock && !performance_show_gpu_power &&
         !performance_show_gpu_memory && !performance_show_cpu_usage && !performance_show_memory) {
-        performance_show_gpu_usage = true;
+        performance_show_fps = true;
     }
 }
 

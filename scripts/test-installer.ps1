@@ -22,6 +22,7 @@ $uninstallLog = Join-Path $env:TEMP "OpenReplay-installer-smoke-$PID-uninstall.l
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\G4F-Elite.OpenReplay_is1'
 $appPathKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\OpenReplay.App.exe'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$runKeyExisted = Test-Path -LiteralPath $runKey
 $shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\OpenReplay\OpenReplay.lnk'
 
 if (Test-Path -LiteralPath $uninstallKey) { throw 'An OpenReplay installer registration already exists.' }
@@ -77,6 +78,9 @@ try {
     if ($registration.DisplayVersion -ne $Version -or $appPath.'(default)' -ne $expectedExecutable) {
         throw 'Installer version or App Paths registration is incorrect.'
     }
+    if (-not (Test-Path -LiteralPath $runKey)) {
+        New-Item -Path $runKey -Force | Out-Null
+    }
     Set-ItemProperty -LiteralPath $runKey -Name OpenReplay -Value "`"$expectedExecutable`" --background"
 
     $uninstallArguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$uninstallLog`"")
@@ -96,6 +100,12 @@ try {
             -Wait | Out-Null
     }
     Remove-ItemProperty -LiteralPath $runKey -Name OpenReplay -Force -ErrorAction SilentlyContinue
+    if (-not $runKeyExisted -and (Test-Path -LiteralPath $runKey)) {
+        $runKeyItem = Get-Item -LiteralPath $runKey
+        if ($runKeyItem.Property.Count -eq 0 -and @(Get-ChildItem -LiteralPath $runKey).Count -eq 0) {
+            Remove-Item -LiteralPath $runKey -Force
+        }
+    }
     Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 

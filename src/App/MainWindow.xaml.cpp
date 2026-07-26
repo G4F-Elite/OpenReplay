@@ -1495,7 +1495,8 @@ void MainWindow::EnsureHostRunning() {
 
     STARTUPINFOW startup{sizeof(startup)};
     PROCESS_INFORMATION process{};
-    if (CreateProcessW(host_path.c_str(), nullptr, nullptr, nullptr, FALSE, 0, nullptr, directory.c_str(), &startup, &process)) {
+    if (CreateProcessW(host_path.c_str(), nullptr, nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                       nullptr, directory.c_str(), &startup, &process)) {
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
         openreplay::ui::TraceStartup(L"Host process launch requested");
@@ -1508,11 +1509,10 @@ void MainWindow::EnsureHostRunning() {
     }
 }
 
-void MainWindow::ShowOverlay() {
-    if (visible_) return;
+bool MainWindow::PositionOverlayWindow() {
     const auto window = GetWindowHandle();
     const auto area = openreplay::ui::ForegroundMonitorArea(window);
-    if (!area.monitor) return;
+    if (!area.monitor) return false;
     auto style = GetWindowLongPtrW(window, GWL_STYLE);
     style &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);
     style |= WS_POPUP;
@@ -1522,7 +1522,26 @@ void MainWindow::ShowOverlay() {
     auto panel_width = openreplay::ui::ScaleForDpi(520, dpi);
     if (panel_width > monitor_width) panel_width = monitor_width;
     SetWindowPos(window, HWND_TOPMOST, area.bounds.left, area.bounds.top,
-                 panel_width, area.bounds.bottom - area.bounds.top, SWP_FRAMECHANGED);
+                 panel_width, area.bounds.bottom - area.bounds.top,
+                 SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    return true;
+}
+
+void MainWindow::ShowOnLaunch() {
+    if (visible_ || !PositionOverlayWindow()) return;
+    Microsoft::UI::Xaml::Window window = *this;
+    window.Activate();
+    const auto window_handle = GetWindowHandle();
+    ShowWindow(window_handle, SW_SHOW);
+    SetForegroundWindow(window_handle);
+    SettingsButton().Focus(FocusState::Programmatic);
+    visible_ = true;
+    PollStatus();
+}
+
+void MainWindow::ShowOverlay() {
+    if (visible_ || !PositionOverlayWindow()) return;
+    const auto window = GetWindowHandle();
     if (!AnimateWindow(window, 170, AW_ACTIVATE | AW_SLIDE | AW_HOR_POSITIVE)) {
         ShowWindow(window, SW_SHOW);
     }

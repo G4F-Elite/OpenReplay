@@ -15,9 +15,9 @@ struct MainWindow : MainWindowT<MainWindow> {
     MainWindow();
     ~MainWindow();
 
-    [[nodiscard]] bool HotkeyRegistered() const noexcept { return hotkey_registered_; }
     void ConfigureUpdateLaunch(std::wstring version, std::filesystem::path health_file);
     void BeginUpdateChecks();
+    void ShowOnLaunch();
 
     void Root_KeyDown(IInspectable const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args);
     void SettingsButton_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
@@ -102,6 +102,7 @@ private:
     void BuildUi();
     void InitializeWindow();
     void EnsureHostRunning();
+    bool PositionOverlayWindow();
     void ShowOverlay();
     void HideOverlay();
     void ToggleOverlay();

@@ -18,6 +18,8 @@ Notable user-facing changes are documented here. Development builds use the
 
 ### Fixed
 
+- Opened the sidebar immediately on normal executable launch and removed the startup window flash in background mode.
+
 - Replaced the fixed 30-second replay-save wait with size-aware mux timeouts and automatic stalled-encoder recovery.
 
 ## [0.1.4] - 2026-07-24

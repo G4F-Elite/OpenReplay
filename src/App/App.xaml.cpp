@@ -59,13 +59,8 @@ void App::OnLaunched(Microsoft::UI::Xaml::LaunchActivatedEventArgs const& args) 
     main_window->ConfigureUpdateLaunch(options.post_update_version, options.update_health);
     openreplay::ui::TraceStartup(L"OnLaunched: MainWindow created");
     window_ = *main_window;
-    window_.Activate();
     (void)args;
-    if (options.background || main_window->HotkeyRegistered()) {
-        HWND window_handle{};
-        winrt::check_hresult(window_.as<::IWindowNative>()->get_WindowHandle(&window_handle));
-        ShowWindow(window_handle, SW_HIDE);
-    }
+    if (!options.background) main_window->ShowOnLaunch();
     main_window->BeginUpdateChecks();
     openreplay::ui::TraceStartup(L"OnLaunched: complete");
 }

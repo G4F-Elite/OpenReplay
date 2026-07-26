@@ -5,7 +5,13 @@ Notable user-facing changes are documented here. Development builds use the
 
 ## [Unreleased]
 
-No changes yet.
+### Changed
+
+- Reduced replay-save latency by removing unnecessary MP4 fast-start rewriting and using realtime NVENC presets.
+
+### Fixed
+
+- Replaced the fixed 30-second replay-save wait with size-aware mux timeouts and automatic stalled-encoder recovery.
 
 ## [0.1.4] - 2026-07-24
 

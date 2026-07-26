@@ -135,6 +135,7 @@ public:
     void (*obs_output_stop)(obs_output_t*){};
     void (*obs_output_force_stop)(obs_output_t*){};
     bool (*obs_output_active)(const obs_output_t*){};
+    std::uint64_t (*obs_output_get_total_frames)(const obs_output_t*){};
     const char* (*obs_output_get_last_error)(obs_output_t*){};
     void (*obs_output_set_video_encoder)(obs_output_t*, obs_encoder_t*){};
     void (*obs_output_set_audio_encoder)(obs_output_t*, obs_encoder_t*, std::size_t){};

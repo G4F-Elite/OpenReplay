@@ -228,15 +228,22 @@ void CaptureController::RecoveryLoop() {
             std::scoped_lock lock{mutex_};
             if (!running_ || !replay_state_.desired()) continue;
 
+            const auto replay_save = engine_.ReplaySaveState();
             if (pipeline_ready_ && !engine_.Healthy()) {
                 pipeline_ready_ = false;
                 recording_started_ = {};
-                ScheduleRecovery("The Direct3D capture device was lost");
+                auto error = replay_save.error;
+                if (error.empty()) {
+                    error = replay_save.in_progress
+                                ? "The capture encoder stalled while saving replay"
+                                : "The capture pipeline stopped producing video frames";
+                }
+                ScheduleRecovery(error);
                 continue;
             }
 
             if (replay_state_.state() == CaptureState::Running && !engine_.ReplayActive()) {
-                if (engine_.RecordingActive() || engine_.ReplaySaveState().in_progress) continue;
+                if (engine_.RecordingActive() || replay_save.in_progress) continue;
                 std::string error;
                 if (InitializePipeline(error)) {
                     pipeline_error_.clear();

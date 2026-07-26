@@ -28,7 +28,7 @@ public:
     bool Initialize(const Settings& settings, std::string& error) override;
     bool ReloadAudioSources(const Settings& settings, std::string& error) override;
     void Shutdown() noexcept override;
-    bool Healthy() const noexcept override { return !api_.device_lost(); }
+    bool Healthy() const noexcept override;
     bool StartReplay(std::string& error) override;
     void StopReplay() noexcept override;
     bool ReplayActive() const noexcept override;
@@ -97,6 +97,9 @@ private:
     ReplaySaveStatus replay_save_status_;
     std::chrono::steady_clock::time_point replay_save_started_{};
     std::uint32_t replay_save_seconds_{};
+    mutable std::uint64_t replay_frame_count_{};
+    mutable std::chrono::steady_clock::time_point replay_frame_progress_at_{};
+    std::atomic_bool replay_mux_failed_{false};
 };
 
 }  // namespace openreplay::host

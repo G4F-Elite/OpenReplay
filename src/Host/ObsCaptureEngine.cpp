@@ -20,7 +20,11 @@ constexpr int kVideoSuccess = 0;
 constexpr long long kCaptureMethodWgc = 2;
 constexpr long long kKeyframeIntervalSeconds = 1;
 constexpr std::uint32_t kReplayGopPaddingSeconds = 1;
-constexpr std::string_view kMp4MuxerSettings = "movflags=faststart avoid_negative_ts=make_zero";
+constexpr auto kReplayFrameStallTimeout = std::chrono::seconds{3};
+constexpr auto kMinimumReplaySaveTimeout = std::chrono::seconds{8};
+constexpr auto kMaximumReplaySaveTimeout = std::chrono::seconds{30};
+constexpr std::uint64_t kAssumedMuxBytesPerSecond = 32U * 1024U * 1024U;
+constexpr std::string_view kMp4MuxerSettings = "avoid_negative_ts=make_zero";
 
 struct ObsDataReleaser {
     ObsApi* api{};
@@ -94,6 +98,9 @@ ObsCaptureEngine::~ObsCaptureEngine() { Shutdown(); }
 
 bool ObsCaptureEngine::Initialize(const Settings& settings, std::string& error) {
     Shutdown();
+    replay_mux_failed_ = false;
+    replay_frame_count_ = 0;
+    replay_frame_progress_at_ = {};
     settings_ = settings;
     settings_.Normalize();
     if (!api_.Load(error)) return false;
@@ -365,6 +372,24 @@ bool ObsCaptureEngine::CreateEncoders(std::string& error) {
     return true;
 }
 
+bool ObsCaptureEngine::Healthy() const noexcept {
+    if (api_.device_lost() || replay_mux_failed_) return false;
+    if (!ReplayActive()) return true;
+
+    const auto frames = api_.obs_output_get_total_frames(replay_outputs_.front()->output);
+    const auto now = std::chrono::steady_clock::now();
+    if (frames != replay_frame_count_) {
+        replay_frame_count_ = frames;
+        replay_frame_progress_at_ = now;
+        return true;
+    }
+    if (replay_frame_progress_at_ == std::chrono::steady_clock::time_point{}) {
+        replay_frame_progress_at_ = now;
+        return true;
+    }
+    return now - replay_frame_progress_at_ <= kReplayFrameStallTimeout;
+}
+
 bool ObsCaptureEngine::TryVideoEncoder(std::string_view id, std::string& error) {
     if (!api_.obs_get_encoder_codec(std::string{id}.c_str())) return false;
     ObsData settings{CreateVideoSettings(id), ObsDataReleaser{&api_}};
@@ -393,16 +418,18 @@ obs_data_t* ObsCaptureEngine::CreateVideoSettings(std::string_view encoder_id) {
         api_.obs_data_set_int(settings, "max_bitrate", maximum_bitrate);
         api_.obs_data_set_string(settings, "preset", preset == QualityPreset::Performance
                                                             ? "p3"
-                                                            : preset == QualityPreset::HighQuality ? "p7" : "p5");
-        api_.obs_data_set_string(settings, "tune", "hq");
+                                                            : preset == QualityPreset::HighQuality ? "p6" : "p5");
+        api_.obs_data_set_string(settings, "tune", "ll");
         api_.obs_data_set_string(settings, "multipass", preset == QualityPreset::Performance
                                                                ? "disabled"
-                                                               : preset == QualityPreset::HighQuality ? "fullres" : "qres");
+                                                               : "qres");
         api_.obs_data_set_string(settings, "profile", settings_.codec == VideoCodec::H264 ? "high" : "main");
         // OBS replay timestamps start at a GOP boundary. B-frame reordering in MP4
         // makes some Windows playback paths display only a few repeated frames.
         api_.obs_data_set_int(settings, "bf", settings_.output_format == OutputFormat::Mp4 ? 0 : 2);
-        api_.obs_data_set_bool(settings, "psycho_aq", preset != QualityPreset::Performance);
+        api_.obs_data_set_bool(settings, "lookahead", false);
+        api_.obs_data_set_bool(settings, "adaptive_quantization", preset != QualityPreset::Performance);
+        api_.obs_data_set_string(settings, "opts", "lookaheadDepth=0");
     } else if (encoder_id.find("_amf") != std::string_view::npos) {
         api_.obs_data_set_string(settings, "rate_control", "VBR");
         api_.obs_data_set_string(settings, "preset", preset == QualityPreset::Performance
@@ -497,6 +524,8 @@ bool ObsCaptureEngine::StartReplay(std::string& error) {
             return false;
         }
     }
+    replay_frame_count_ = api_.obs_output_get_total_frames(replay_outputs_.front()->output);
+    replay_frame_progress_at_ = std::chrono::steady_clock::now();
     return true;
 }
 
@@ -513,6 +542,10 @@ bool ObsCaptureEngine::ReplayActive() const noexcept {
 bool ObsCaptureEngine::SaveReplay(std::uint32_t replay_seconds, std::filesystem::path& output, std::string& error) {
     if (!ReplayActive()) {
         error = "Instant replay is not running";
+        return false;
+    }
+    if (!Healthy()) {
+        error = "The capture encoder stalled and is being restarted";
         return false;
     }
     const auto requested_seconds = replay_seconds == 0 ? settings_.replay_seconds : replay_seconds;
@@ -534,6 +567,7 @@ bool ObsCaptureEngine::SaveReplay(std::uint32_t replay_seconds, std::filesystem:
         replay_save_status_.error.clear();
         replay_save_started_ = std::chrono::steady_clock::now();
         replay_save_seconds_ = requested_seconds;
+        replay_mux_failed_ = false;
     }
     calldata_t call{};
     if (!api_.proc_handler_call(api_.obs_output_get_proc_handler((*selected)->output), "save", &call)) {
@@ -555,12 +589,19 @@ ReplaySaveStatus ObsCaptureEngine::ReplaySaveState() {
     ReplaySaveStatus result;
     {
         std::scoped_lock lock{replay_save_mutex_};
-        const auto timeout_seconds = std::clamp(replay_save_seconds_ / 2U, 30U, 120U);
+        const auto audio_kbps = settings_.microphone_enabled ? 704U : 512U;
+        const auto estimated_bytes = (static_cast<std::uint64_t>(settings_.bitrate_kbps) + audio_kbps) *
+                                     replay_save_seconds_ * 1000U / 8U;
+        const auto mux_seconds = std::chrono::seconds{
+            3U + (estimated_bytes + kAssumedMuxBytesPerSecond - 1U) / kAssumedMuxBytesPerSecond};
+        const auto timeout = std::clamp(mux_seconds, kMinimumReplaySaveTimeout, kMaximumReplaySaveTimeout);
         if (replay_save_status_.in_progress &&
-            std::chrono::steady_clock::now() - replay_save_started_ > std::chrono::seconds{timeout_seconds}) {
+            std::chrono::steady_clock::now() - replay_save_started_ > timeout) {
             replay_save_status_.in_progress = false;
-            replay_save_status_.error = "Replay save timed out after " + std::to_string(timeout_seconds) + " seconds";
+            replay_save_status_.error =
+                "Replay muxing timed out after " + std::to_string(timeout.count()) + " seconds";
             ++replay_save_status_.revision;
+            replay_mux_failed_ = true;
             timed_out = true;
         }
         result = replay_save_status_;
@@ -589,6 +630,7 @@ void ObsCaptureEngine::ReplaySaved(void* context, calldata_t*) noexcept {
             self->replay_save_status_.output = FromUtf8(saved_path);
             self->replay_save_status_.error.clear();
             ++self->replay_save_status_.revision;
+            self->replay_mux_failed_ = false;
         }
         WriteHostLog("Replay saved: " + saved_path);
     } catch (const std::exception& exception) {

@@ -175,6 +175,7 @@ bool ObsApi::ResolveAll(std::string& error) {
     OPENREPLAY_OBS_RESOLVE(obs_output_stop);
     OPENREPLAY_OBS_RESOLVE(obs_output_force_stop);
     OPENREPLAY_OBS_RESOLVE(obs_output_active);
+    OPENREPLAY_OBS_RESOLVE(obs_output_get_total_frames);
     OPENREPLAY_OBS_RESOLVE(obs_output_get_last_error);
     OPENREPLAY_OBS_RESOLVE(obs_output_set_video_encoder);
     OPENREPLAY_OBS_RESOLVE(obs_output_set_audio_encoder);

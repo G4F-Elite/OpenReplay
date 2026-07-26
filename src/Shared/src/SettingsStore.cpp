@@ -89,6 +89,7 @@ Settings SettingsStore::Load() const {
     result.instant_replay_enabled = ParseBool(values, "instant_replay_enabled", result.instant_replay_enabled);
     result.start_with_windows = ParseBool(values, "start_with_windows", result.start_with_windows);
     result.automatic_updates = ParseBool(values, "automatic_updates", result.automatic_updates);
+    result.developer_updates = ParseBool(values, "developer_updates", result.developer_updates);
     result.capture_cursor = ParseBool(values, "capture_cursor", result.capture_cursor);
     result.microphone_enabled = ParseBool(values, "microphone_enabled", result.microphone_enabled);
     result.replay_seconds = ParseUInt(values, "replay_seconds", result.replay_seconds);
@@ -165,10 +166,11 @@ void SettingsStore::Save(const Settings& input) const {
     {
         std::ofstream output(temporary, std::ios::trunc);
         if (!output) throw std::runtime_error("Unable to open temporary settings file");
-        output << "version=9\n"
+        output << "version=10\n"
                << "instant_replay_enabled=" << (settings.instant_replay_enabled ? "true" : "false") << '\n'
                << "start_with_windows=" << (settings.start_with_windows ? "true" : "false") << '\n'
                << "automatic_updates=" << (settings.automatic_updates ? "true" : "false") << '\n'
+               << "developer_updates=" << (settings.developer_updates ? "true" : "false") << '\n'
                << "capture_cursor=" << (settings.capture_cursor ? "true" : "false") << '\n'
                << "microphone_enabled=" << (settings.microphone_enabled ? "true" : "false") << '\n'
                << "replay_seconds=" << settings.replay_seconds << '\n'

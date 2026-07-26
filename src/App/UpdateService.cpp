@@ -158,15 +158,19 @@ std::filesystem::path UpdateService::UpdateRoot() {
     return openreplay::SettingsStore::DefaultPath().parent_path() / L"updates";
 }
 
-UpdateCheckResult UpdateService::Check() const {
+UpdateCheckResult UpdateService::Check(bool developer_channel) const {
     UpdateCheckResult result;
     std::wstring error;
-    const auto manifest = DownloadMemory(openreplay::FromUtf8(openreplay::kUpdateManifestUrl), 1024 * 1024, error);
+    const auto manifest_url = developer_channel ? openreplay::kDevUpdateManifestUrl
+                                                : openreplay::kUpdateManifestUrl;
+    const auto signature_url = developer_channel ? openreplay::kDevUpdateSignatureUrl
+                                                 : openreplay::kUpdateSignatureUrl;
+    const auto manifest = DownloadMemory(openreplay::FromUtf8(manifest_url), 1024 * 1024, error);
     if (!manifest) {
         result.error = std::move(error);
         return result;
     }
-    const auto signature = DownloadMemory(openreplay::FromUtf8(openreplay::kUpdateSignatureUrl), 4096, error);
+    const auto signature = DownloadMemory(openreplay::FromUtf8(signature_url), 4096, error);
     if (!signature || !openreplay::VerifyUpdateSignature(*manifest, *signature)) {
         result.error = signature ? L"Release metadata signature is invalid" : std::move(error);
         return result;
@@ -179,13 +183,15 @@ UpdateCheckResult UpdateService::Check() const {
     }
     result.ok = true;
     result.manifest = *parsed;
-    result.update_available = openreplay::IsValidStableUpdate(result.manifest, openreplay::kVersion);
+    result.update_available = openreplay::IsValidUpdate(
+        result.manifest, openreplay::kVersion, developer_channel ? "dev" : "stable");
     return result;
 }
 
-UpdateDownloadResult UpdateService::Download(const UpdateManifest& manifest) const {
+UpdateDownloadResult UpdateService::Download(const UpdateManifest& manifest, bool developer_channel) const {
     UpdateDownloadResult result;
-    if (!openreplay::IsValidStableUpdate(manifest, openreplay::kVersion)) {
+    if (!openreplay::IsValidUpdate(manifest, openreplay::kVersion,
+                                   developer_channel ? "dev" : "stable")) {
         result.error = L"Release metadata is not trusted";
         return result;
     }

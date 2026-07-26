@@ -133,7 +133,8 @@ private:
     void UpdatePerformanceOverlaySummary();
     void UpdateUpdateUi();
     winrt::fire_and_forget CheckForUpdatesAsync(bool manual, bool automatic_download);
-    void CompleteUpdateCheck(openreplay::ui::UpdateCheckResult result, bool manual, bool automatic_download);
+    void CompleteUpdateCheck(openreplay::ui::UpdateCheckResult result, bool manual, bool automatic_download,
+                             bool developer_channel);
     winrt::fire_and_forget DownloadUpdateAsync();
     void CompleteUpdateDownload(openreplay::ui::UpdateDownloadResult result);
     void ApplyDownloadedUpdate();
@@ -395,9 +396,11 @@ private:
     Microsoft::UI::Xaml::Controls::TextBlock storage_space_text_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock updates_section_title_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock automatic_updates_label_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock developer_updates_label_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock update_version_text_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock update_status_text_{nullptr};
     Microsoft::UI::Xaml::Controls::ToggleSwitch automatic_updates_toggle_{nullptr};
+    Microsoft::UI::Xaml::Controls::ToggleSwitch developer_updates_toggle_{nullptr};
     Microsoft::UI::Xaml::Controls::Button check_update_button_{nullptr};
     Microsoft::UI::Xaml::Controls::Button update_action_button_{nullptr};
     Microsoft::UI::Xaml::Controls::Button release_notes_button_{nullptr};

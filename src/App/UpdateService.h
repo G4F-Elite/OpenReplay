@@ -22,8 +22,8 @@ struct UpdateDownloadResult {
 
 class UpdateService {
 public:
-    UpdateCheckResult Check() const;
-    UpdateDownloadResult Download(const UpdateManifest& manifest) const;
+    UpdateCheckResult Check(bool developer_channel) const;
+    UpdateDownloadResult Download(const UpdateManifest& manifest, bool developer_channel) const;
     bool LaunchUpdater(const UpdateManifest& manifest, const std::filesystem::path& archive,
                        DWORD app_pid, const std::filesystem::path& install_root,
                        const std::filesystem::path& health_file, std::wstring& error) const;

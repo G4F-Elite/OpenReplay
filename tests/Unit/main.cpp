@@ -38,6 +38,7 @@ void SettingsRoundTrip() {
     settings.instant_replay_enabled = false;
     settings.start_with_windows = true;
     settings.automatic_updates = false;
+    settings.developer_updates = true;
     settings.language = "ru-RU";
     settings.monitor_id = "display:1=value";
     settings.output_directory = std::filesystem::temp_directory_path() / L"Open Replay";
@@ -64,6 +65,7 @@ void SettingsRoundTrip() {
     Check(!loaded.instant_replay_enabled, "boolean setting did not round-trip");
     Check(loaded.start_with_windows, "start with Windows setting did not round-trip");
     Check(!loaded.automatic_updates, "automatic updates setting did not round-trip");
+    Check(loaded.developer_updates, "developer updates setting did not round-trip");
     Check(loaded.monitor_id == settings.monitor_id, "escaped setting did not round-trip");
     Check(loaded.output_directory == settings.output_directory, "path setting did not round-trip");
     Check(loaded.replay_seconds == 90, "numeric setting did not round-trip");
@@ -99,6 +101,7 @@ void DefaultSettingsUseEnglishAndMp4() {
     Check(settings.recording_hotkey_enabled && settings.recording_hotkey_chord == "Ctrl+F9",
           "recording hotkey defaults were not applied");
     Check(settings.automatic_updates, "automatic updates were not enabled by default");
+    Check(!settings.developer_updates, "developer updates were enabled by default");
 }
 
 void UpdateMetadataParsesAndComparesVersions() {
@@ -127,12 +130,30 @@ void UpdateMetadataParsesAndComparesVersions() {
         "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     })");
     Check(manifest.has_value(), "update manifest was not parsed");
-    Check(openreplay::IsValidStableUpdate(*manifest, openreplay::kVersion),
+    Check(openreplay::IsValidUpdate(*manifest, openreplay::kVersion, "stable"),
           "valid stable update was rejected");
     auto invalid = *manifest;
     invalid.asset_url = "https://example.com/update.zip";
-    Check(!openreplay::IsValidStableUpdate(invalid, openreplay::kVersion),
+    Check(!openreplay::IsValidUpdate(invalid, openreplay::kVersion, "stable"),
           "untrusted update URL was accepted");
+
+    auto developer = *manifest;
+    developer.channel = "dev";
+    developer.version = "0.2.0-dev.10";
+    developer.tag = "dev";
+    developer.asset_url = "https://github.com/G4F-Elite/OpenReplay/releases/download/dev/" +
+                          developer.asset_name;
+    Check(openreplay::IsValidUpdate(developer, openreplay::kVersion, "dev"),
+          "valid developer update was rejected");
+    Check(!openreplay::IsValidUpdate(developer, openreplay::kVersion, "stable"),
+          "developer update was accepted on the stable channel");
+    developer.tag = "unexpected";
+    Check(!openreplay::IsValidUpdate(developer, openreplay::kVersion, "dev"),
+          "developer update with an unexpected tag was accepted");
+    developer.tag = "dev";
+    developer.asset_url += ".other";
+    Check(!openreplay::IsValidUpdate(developer, openreplay::kVersion, "dev"),
+          "developer update with a mismatched asset URL was accepted");
 }
 
 void UpdateSignatureFixtureVerifies() {

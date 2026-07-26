@@ -14,6 +14,7 @@ Notable user-facing changes are documented here. Development builds use the
 ### Added
 
 - Added compositor-delivered FPS, 1% low, 0.1% low, frametime, GPU power, and configurable graph metrics to the performance overlay.
+- Added an opt-in developer update channel backed by signed rolling release metadata.
 
 ### Fixed
 

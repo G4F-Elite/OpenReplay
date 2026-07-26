@@ -35,7 +35,8 @@ struct UpdateManifest {
 
 std::optional<SemanticVersion> ParseSemanticVersion(std::string_view value) noexcept;
 std::optional<UpdateManifest> ParseUpdateManifest(std::string_view json);
-bool IsValidStableUpdate(const UpdateManifest& manifest, std::string_view current_version) noexcept;
+bool IsValidUpdate(const UpdateManifest& manifest, std::string_view current_version,
+                   std::string_view channel) noexcept;
 bool VerifyUpdateSignature(std::span<const std::uint8_t> content,
                            std::span<const std::uint8_t> signature) noexcept;
 

@@ -36,6 +36,7 @@ struct Settings {
     bool instant_replay_enabled{true};
     bool start_with_windows{false};
     bool automatic_updates{true};
+    bool developer_updates{false};
     bool capture_cursor{true};
     bool microphone_enabled{true};
     std::uint32_t replay_seconds{60};

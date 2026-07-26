@@ -211,13 +211,22 @@ std::optional<UpdateManifest> ParseUpdateManifest(std::string_view json) {
     return result;
 }
 
-bool IsValidStableUpdate(const UpdateManifest& manifest, std::string_view current_version) noexcept {
+bool IsValidUpdate(const UpdateManifest& manifest, std::string_view current_version,
+                   std::string_view channel) noexcept {
     const auto current = ParseSemanticVersion(current_version);
     const auto available = ParseSemanticVersion(manifest.version);
+    const auto expected_tag = channel == "dev" ? std::string_view{"dev"}
+                                                : std::string_view{manifest.version};
+    const bool valid_tag = channel == "dev"
+        ? manifest.tag == expected_tag
+        : manifest.tag.size() == expected_tag.size() + 1 && manifest.tag.front() == 'v' &&
+              std::string_view{manifest.tag}.substr(1) == expected_tag;
+    const auto expected_asset_url = "https://github.com/G4F-Elite/OpenReplay/releases/download/" +
+                                    manifest.tag + '/' + manifest.asset_name;
     return current && available && manifest.schema == 1 && manifest.product == "OpenReplay" &&
-           manifest.channel == "stable" && manifest.architecture == "x64" && manifest.asset_size > 0 &&
-           IsLowerHex(manifest.asset_sha256) && manifest.asset_url.starts_with(
-               "https://github.com/G4F-Elite/OpenReplay/releases/download/") &&
+           (channel == "stable" || channel == "dev") && manifest.channel == channel &&
+           valid_tag && manifest.architecture == "x64" && manifest.asset_size > 0 &&
+           IsLowerHex(manifest.asset_sha256) && manifest.asset_url == expected_asset_url &&
            *available > *current;
 }
 

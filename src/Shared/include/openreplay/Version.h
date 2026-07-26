@@ -12,6 +12,10 @@ inline constexpr std::string_view kUpdateManifestUrl{
     "https://github.com/G4F-Elite/OpenReplay/releases/latest/download/OpenReplay-update.json"};
 inline constexpr std::string_view kUpdateSignatureUrl{
     "https://github.com/G4F-Elite/OpenReplay/releases/latest/download/OpenReplay-update.json.sig"};
+inline constexpr std::string_view kDevUpdateManifestUrl{
+    "https://github.com/G4F-Elite/OpenReplay/releases/download/dev/OpenReplay-update.json"};
+inline constexpr std::string_view kDevUpdateSignatureUrl{
+    "https://github.com/G4F-Elite/OpenReplay/releases/download/dev/OpenReplay-update.json.sig"};
 
 // RSA-3072 public key used only to verify release metadata. The private key is
 // stored as a GitHub Actions secret and is never included in the repository.

@@ -1010,6 +1010,27 @@ void MainWindow::BuildUi() {
     automatic_updates_row.Children().Append(automatic_updates_toggle_);
     updates_section.Children().Append(automatic_updates_row);
 
+    Grid developer_updates_row;
+    AddColumn(developer_updates_row, 1, GridUnitType::Star);
+    AddColumn(developer_updates_row, 0, GridUnitType::Auto);
+    developer_updates_row.Margin(Thickness{0, 0, 0, 12});
+    developer_updates_label_ = Text(L"Receive developer builds", 12.5, primary_text_brush);
+    developer_updates_label_.VerticalAlignment(VerticalAlignment::Center);
+    developer_updates_row.Children().Append(developer_updates_label_);
+    developer_updates_toggle_ = controls.Toggle();
+    developer_updates_toggle_.HorizontalAlignment(HorizontalAlignment::Right);
+    developer_updates_toggle_.Toggled([this](auto&&, auto&&) {
+        if (updating_ui_) return;
+        available_update_ = {};
+        downloaded_update_.clear();
+        ScheduleSettingsApply();
+        UpdateUpdateUi();
+        if (automatic_updates_toggle_.IsOn()) CheckForUpdatesAsync(false, true);
+    });
+    Grid::SetColumn(developer_updates_toggle_, 1);
+    developer_updates_row.Children().Append(developer_updates_toggle_);
+    updates_section.Children().Append(developer_updates_row);
+
     Grid update_actions;
     AddColumn(update_actions, 1, GridUnitType::Star);
     AddColumn(update_actions, 1, GridUnitType::Star);
@@ -1582,6 +1603,7 @@ void MainWindow::LoadSettingsIntoControls() {
     CursorToggle().IsOn(settings_.capture_cursor);
     start_with_windows_toggle_.IsOn(settings_.start_with_windows);
     automatic_updates_toggle_.IsOn(settings_.automatic_updates);
+    developer_updates_toggle_.IsOn(settings_.developer_updates);
     LanguageSelector().SelectedIndex(english_ ? 1 : 0);
     OutputDirectoryText().Text(settings_.output_directory.wstring());
     EnumerateMonitors();
@@ -1855,7 +1877,9 @@ void MainWindow::ApplyLanguage() {
     set(cursor_label_, english_ ? L"Capture cursor" : L"Захватывать курсор");
     set(start_with_windows_label_, english_ ? L"Start with Windows" : L"Запускать вместе с Windows");
     set(automatic_updates_label_, english_ ? L"Check and download automatically"
-                                           : L"Проверять и скачивать автоматически");
+                                            : L"Проверять и скачивать автоматически");
+    set(developer_updates_label_, english_ ? L"Receive developer builds"
+                                           : L"Получать dev-сборки");
     set(shortcuts_label_, english_ ? L"Shortcuts" : L"Хоткеи");
     set(recording_hotkey_label_, english_ ? L"Session recording" : L"Запись сессии");
     recording_hotkey_input_.PlaceholderText(english_ ? L"Press shortcut" : L"Нажмите сочетание");
@@ -1904,6 +1928,8 @@ void MainWindow::ApplyLanguage() {
     start_with_windows_toggle_.OffContent(nullptr);
     automatic_updates_toggle_.OnContent(nullptr);
     automatic_updates_toggle_.OffContent(nullptr);
+    developer_updates_toggle_.OnContent(nullptr);
+    developer_updates_toggle_.OffContent(nullptr);
     const auto replay_action = english_ ? L"Save last " + std::to_wstring(settings_.replay_seconds) + L" sec"
                                         : L"Сохранить последние " + std::to_wstring(settings_.replay_seconds) + L" сек";
     SaveReplayButton().Content(winrt::box_value(replay_action));
@@ -2097,6 +2123,7 @@ void MainWindow::UpdateUpdateUi() {
                                     ? (english_ ? L" · Dev" : L" · Dev-канал")
                                     : (english_ ? L" · Stable" : L" · Стабильный канал")));
     check_update_button_.IsEnabled(!update_check_in_flight_ && !update_download_in_flight_);
+    developer_updates_toggle_.IsEnabled(!update_check_in_flight_ && !update_download_in_flight_);
     if (update_download_in_flight_) {
         update_status_text_.Text(english_ ? L"Downloading and verifying update..."
                                           : L"Загрузка и проверка обновления...");
@@ -2129,8 +2156,12 @@ void MainWindow::UpdateUpdateUi() {
         release_notes_button_.Visibility(Visibility::Visible);
         return;
     }
-    update_status_text_.Text(english_ ? L"Updates are checked in the background."
-                                      : L"Обновления проверяются в фоне.");
+    const auto developer_channel = developer_updates_toggle_.IsOn();
+    update_status_text_.Text(developer_channel
+        ? (english_ ? L"Developer updates are checked in the background."
+                    : L"Dev-обновления проверяются в фоне.")
+        : (english_ ? L"Stable updates are checked in the background."
+                    : L"Стабильные обновления проверяются в фоне."));
     update_action_button_.Visibility(Visibility::Collapsed);
     release_notes_button_.Visibility(Visibility::Collapsed);
 }
@@ -2141,18 +2172,24 @@ winrt::fire_and_forget MainWindow::CheckForUpdatesAsync(bool manual, bool automa
     UpdateUpdateUi();
     const auto dispatcher = DispatcherQueue();
     const auto weak = get_weak();
+    const bool developer_channel = developer_updates_toggle_.IsOn();
     co_await winrt::resume_background();
-    auto result = update_service_.Check();
-    dispatcher.TryEnqueue([weak, result = std::move(result), manual, automatic_download]() mutable {
+    auto result = update_service_.Check(developer_channel);
+    dispatcher.TryEnqueue([weak, result = std::move(result), manual, automatic_download,
+                           developer_channel]() mutable {
         if (const auto self = weak.get()) {
-            self->CompleteUpdateCheck(std::move(result), manual, automatic_download);
+            self->CompleteUpdateCheck(std::move(result), manual, automatic_download, developer_channel);
         }
     });
 }
 
 void MainWindow::CompleteUpdateCheck(openreplay::ui::UpdateCheckResult result, bool manual,
-                                     bool automatic_download) {
+                                      bool automatic_download, bool developer_channel) {
     update_check_in_flight_ = false;
+    if (developer_updates_toggle_.IsOn() != developer_channel) {
+        UpdateUpdateUi();
+        return;
+    }
     if (!result.ok) {
         UpdateUpdateUi();
         if (manual) {
@@ -2168,8 +2205,11 @@ void MainWindow::CompleteUpdateCheck(openreplay::ui::UpdateCheckResult result, b
         available_update_ = {};
         UpdateUpdateUi();
         if (manual) {
-            update_status_text_.Text(english_ ? L"You are using the latest stable version."
-                                              : L"Установлена последняя стабильная версия.");
+            update_status_text_.Text(developer_channel
+                ? (english_ ? L"You are using the latest developer version."
+                            : L"Установлена последняя dev-версия.")
+                : (english_ ? L"You are using the latest stable version."
+                            : L"Установлена последняя стабильная версия."));
         }
         return;
     }
@@ -2189,8 +2229,9 @@ winrt::fire_and_forget MainWindow::DownloadUpdateAsync() {
     const auto dispatcher = DispatcherQueue();
     const auto weak = get_weak();
     const auto manifest = available_update_;
+    const bool developer_channel = manifest.channel == "dev";
     co_await winrt::resume_background();
-    auto result = update_service_.Download(manifest);
+    auto result = update_service_.Download(manifest, developer_channel);
     dispatcher.TryEnqueue([weak, result = std::move(result)]() mutable {
         if (const auto self = weak.get()) self->CompleteUpdateDownload(std::move(result));
     });
@@ -3105,6 +3146,7 @@ bool MainWindow::ReadSettingsFromControls(openreplay::Settings& draft, bool show
     draft.capture_cursor = CursorToggle().IsOn();
     draft.start_with_windows = start_with_windows_toggle_.IsOn();
     draft.automatic_updates = automatic_updates_toggle_.IsOn();
+    draft.developer_updates = developer_updates_toggle_.IsOn();
     draft.language = LanguageSelector().SelectedIndex() == 0 ? "ru-RU" : "en-US";
     const auto monitor_index = MonitorSelector().SelectedIndex();
     if (monitor_index >= 0 && static_cast<size_t>(monitor_index) < monitor_ids_.size()) {

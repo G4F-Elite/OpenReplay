@@ -64,6 +64,20 @@ jobs:
       - name: Test installer
         shell: powershell
         run: .\scripts\test-installer.ps1 -Version '${{ steps.version.outputs.version }}'
+      - name: Create signed dev update metadata
+        shell: powershell
+        env:
+          UPDATE_PRIVATE_KEY: ${{ secrets.OPENREPLAY_UPDATE_PRIVATE_KEY }}
+        run: |
+          if (-not $env:UPDATE_PRIVATE_KEY) { throw 'OPENREPLAY_UPDATE_PRIVATE_KEY is not configured.' }
+          .\scripts\create-update-metadata.ps1 `
+            -Version '${{ steps.version.outputs.version }}' `
+            -Archive ".\artifacts\package\OpenReplay-${{ steps.version.outputs.version }}-win-x64.zip" `
+            -Channel dev -Tag dev -PrivateKeyBase64 $env:UPDATE_PRIVATE_KEY
+          .\scripts\verify-update-signature.ps1 `
+            -Manifest ".\artifacts\package\OpenReplay-update.json" `
+            -Signature ".\artifacts\package\OpenReplay-update.json.sig" `
+            -PrivateKeyBase64 $env:UPDATE_PRIVATE_KEY
       - name: Publish rolling dev prerelease
         shell: powershell
         env:
@@ -85,6 +99,8 @@ jobs:
             ".\artifacts\package\OpenReplay-$version-win-x64.zip.sha256" `
             ".\artifacts\package\OpenReplay-$version-win-x64-installer.exe" `
             ".\artifacts\package\OpenReplay-$version-win-x64-installer.exe.sha256" `
+            ".\artifacts\package\OpenReplay-update.json" `
+            ".\artifacts\package\OpenReplay-update.json.sig" `
             --repo '${{ github.repository }}' --prerelease --latest=false `
             --title "OpenReplay $version (dev)" `
             --notes-file ".\release-notes.md"

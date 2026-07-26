@@ -2,28 +2,34 @@ param(
     [Parameter(Mandatory = $true)][string]$Version,
     [Parameter(Mandatory = $true)][string]$Archive,
     [Parameter(Mandatory = $true)][string]$PrivateKeyBase64,
+    [ValidateSet('stable', 'dev')][string]$Channel = 'stable',
+    [string]$Tag,
     [string]$OutputDirectory = (Split-Path -Parent $Archive)
 )
 
 $ErrorActionPreference = 'Stop'
-if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Version must be stable semantic version X.Y.Z.' }
+if ($Version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$') {
+    throw 'Version must be a semantic version.'
+}
+if ($Channel -eq 'stable' -and $Version.Contains('-')) { throw 'Stable metadata cannot use a prerelease version.' }
+if ($Channel -eq 'dev' -and -not $Version.Contains('-')) { throw 'Developer metadata requires a prerelease version.' }
 $archivePath = (Resolve-Path $Archive).Path
 $archiveName = Split-Path -Leaf $archivePath
 $size = (Get-Item -LiteralPath $archivePath).Length
 $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
-$tag = "v$Version"
+$releaseTag = if ($Tag) { $Tag } elseif ($Channel -eq 'stable') { "v$Version" } else { 'dev' }
 $manifestPath = Join-Path $OutputDirectory 'OpenReplay-update.json'
 $signaturePath = Join-Path $OutputDirectory 'OpenReplay-update.json.sig'
 
 $manifest = [ordered]@{
     schema = 1
     product = 'OpenReplay'
-    channel = 'stable'
+    channel = $Channel
     version = $Version
-    tag = $tag
+    tag = $releaseTag
     published_at = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
-    release_notes_url = "https://github.com/G4F-Elite/OpenReplay/releases/tag/$tag"
-    asset_url = "https://github.com/G4F-Elite/OpenReplay/releases/download/$tag/$archiveName"
+    release_notes_url = "https://github.com/G4F-Elite/OpenReplay/releases/tag/$releaseTag"
+    asset_url = "https://github.com/G4F-Elite/OpenReplay/releases/download/$releaseTag/$archiveName"
     asset_name = $archiveName
     architecture = 'x64'
     size_bytes = $size

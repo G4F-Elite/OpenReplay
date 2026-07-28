@@ -1,15 +1,9 @@
 #include <windows.h>
 #include <d3d11.h>
-#include <dxgi.h>
+#include <dxgi1_2.h>
 #include <sddl.h>
 #include <shellapi.h>
-#include <windows.graphics.capture.interop.h>
-#include <windows.graphics.directx.direct3d11.interop.h>
 
-#include <winrt/Windows.Foundation.h>
-#include <winrt/Windows.Graphics.Capture.h>
-#include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
-#include <winrt/Windows.Graphics.DirectX.h>
 #include <winrt/base.h>
 
 #include <algorithm>
@@ -25,17 +19,12 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
 
 using Clock = std::chrono::steady_clock;
-using winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool;
-using winrt::Windows::Graphics::Capture::GraphicsCaptureItem;
-using winrt::Windows::Graphics::Capture::GraphicsCaptureSession;
-using winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
-using winrt::Windows::Graphics::DirectX::DirectXPixelFormat;
-
 struct Handle {
     HANDLE value{nullptr};
     ~Handle() { Reset(); }
@@ -128,78 +117,41 @@ public:
         }
         {
             std::scoped_lock lock{mutex_};
-            if (process_id_ == process_id && session_) return true;
+            if (process_id_ == process_id && capture_running_) return true;
         }
         Stop();
 
-        try {
-            if (!GraphicsCaptureSession::IsSupported()) {
-                SetError("Windows Graphics Capture is unavailable");
-                return false;
-            }
-            const auto window = TargetWindow(process_id);
-            if (!window) {
-                SetError("Target window is unavailable");
-                return false;
-            }
-
-            winrt::com_ptr<ID3D11Device> d3d_device;
-            auto device_result = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
-                                                   D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0,
-                                                   D3D11_SDK_VERSION, d3d_device.put(), nullptr, nullptr);
-            if (FAILED(device_result)) {
-                device_result = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr,
-                                                  D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0,
-                                                  D3D11_SDK_VERSION, d3d_device.put(), nullptr, nullptr);
-            }
-            winrt::check_hresult(device_result);
-            const auto dxgi_device = d3d_device.as<IDXGIDevice>();
-            winrt::com_ptr<IInspectable> inspectable;
-            winrt::check_hresult(CreateDirect3D11DeviceFromDXGIDevice(dxgi_device.get(), inspectable.put()));
-            device_ = inspectable.as<IDirect3DDevice>();
-
-            const auto interop = winrt::get_activation_factory<GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
-            winrt::check_hresult(interop->CreateForWindow(window, winrt::guid_of<GraphicsCaptureItem>(),
-                                                          winrt::put_abi(item_)));
-            const auto size = item_.Size();
-            if (size.Width <= 0 || size.Height <= 0) {
-                SetError("Target window has no capture area");
-                Stop();
-                return false;
-            }
-
-            frame_pool_ = Direct3D11CaptureFramePool::CreateFreeThreaded(
-                device_, DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, size);
-            const auto generation = generation_.fetch_add(1) + 1;
-            frame_arrived_ = frame_pool_.FrameArrived(
-                [this, generation](const Direct3D11CaptureFramePool& sender, const winrt::Windows::Foundation::IInspectable&) noexcept {
-                    OnFrame(sender, generation);
-                });
-            session_ = frame_pool_.CreateCaptureSession(item_);
-            {
-                std::scoped_lock lock{mutex_};
-                process_id_ = process_id;
-                frame_times_.clear();
-                last_timestamp_.reset();
-                error_.clear();
-            }
-            session_.StartCapture();
-            return true;
-        } catch (const winrt::hresult_error& error) {
-            SetError(winrt::to_string(error.message()));
-        } catch (...) {
-            SetError("Unable to start window frame capture");
+        const auto window = TargetWindow(process_id);
+        if (!window) {
+            SetError("Target window is unavailable");
+            return false;
         }
-        StopCaptureObjects();
-        return false;
+        const auto monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+        auto duplication = CreateDuplication(monitor);
+        if (!duplication) return false;
+
+        {
+            std::scoped_lock lock{mutex_};
+            process_id_ = process_id;
+            frame_times_.clear();
+            error_.clear();
+        }
+        stop_capture_ = false;
+        capture_running_ = true;
+        capture_thread_ = std::thread{
+            [this, monitor, duplication = std::move(*duplication)]() mutable {
+                ReadFrames(monitor, std::move(duplication));
+            }};
+        return true;
     }
 
     void Stop() noexcept {
-        StopCaptureObjects();
+        stop_capture_ = true;
+        if (capture_thread_.joinable()) capture_thread_.join();
+        capture_running_ = false;
         std::scoped_lock lock{mutex_};
         process_id_ = 0;
         frame_times_.clear();
-        last_timestamp_.reset();
     }
 
     std::string Snapshot() {
@@ -253,46 +205,108 @@ public:
             history += std::format("{:.4f}", frames[index].milliseconds);
         }
         return std::format("ok\npid={}\nfps={:.2f}\nlow1={:.2f}\nlow01={:.2f}\nframetime={:.2f}\n"
-                           "history={}\nerror={}\nsource=Windows Graphics Capture",
+                           "history={}\nerror={}\nsource=DXGI Desktop Duplication",
                            process_id, fps, low(0.01), low(0.001), frame_time, history, error);
     }
 
 private:
-    void OnFrame(const Direct3D11CaptureFramePool& sender, std::uint64_t generation) noexcept {
-        try {
-            for (;;) {
-                const auto frame = sender.TryGetNextFrame();
-                if (!frame) break;
-                const auto timestamp = frame.SystemRelativeTime().count();
-                std::scoped_lock lock{mutex_};
-                if (generation != generation_.load()) return;
-                if (last_timestamp_ && timestamp > *last_timestamp_) {
-                    const auto milliseconds = static_cast<double>(timestamp - *last_timestamp_) / 10000.0;
-                    if (milliseconds > 0.05 && milliseconds <= 1000.0) {
-                        frame_times_.push_back({Clock::now(), milliseconds});
-                        if (frame_times_.size() > 7200) frame_times_.erase(frame_times_.begin(), frame_times_.begin() + 1200);
-                    }
-                }
-                last_timestamp_ = timestamp;
-            }
-        } catch (...) {
-            SetError("Window frame capture stopped");
+    struct Duplication {
+        winrt::com_ptr<ID3D11Device> device;
+        winrt::com_ptr<IDXGIOutputDuplication> output;
+    };
+
+    std::optional<Duplication> CreateDuplication(HMONITOR monitor) noexcept {
+        winrt::com_ptr<IDXGIFactory1> factory;
+        if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(factory.put())))) {
+            SetError("Unable to create DXGI factory");
+            return std::nullopt;
         }
+
+        for (UINT adapter_index = 0;; ++adapter_index) {
+            winrt::com_ptr<IDXGIAdapter1> adapter;
+            const auto adapter_result = factory->EnumAdapters1(adapter_index, adapter.put());
+            if (adapter_result == DXGI_ERROR_NOT_FOUND) break;
+            if (FAILED(adapter_result)) continue;
+            for (UINT output_index = 0;; ++output_index) {
+                winrt::com_ptr<IDXGIOutput> output;
+                const auto output_result = adapter->EnumOutputs(output_index, output.put());
+                if (output_result == DXGI_ERROR_NOT_FOUND) break;
+                if (FAILED(output_result)) continue;
+                DXGI_OUTPUT_DESC description{};
+                if (FAILED(output->GetDesc(&description)) || description.Monitor != monitor) continue;
+
+                Duplication result;
+                if (FAILED(D3D11CreateDevice(adapter.get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
+                                             D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0,
+                                             D3D11_SDK_VERSION, result.device.put(), nullptr, nullptr))) {
+                    SetError("Unable to create display telemetry device");
+                    return std::nullopt;
+                }
+                const auto output1 = output.as<IDXGIOutput1>();
+                const auto duplicate_result = output1->DuplicateOutput(result.device.get(), result.output.put());
+                if (FAILED(duplicate_result)) {
+                    SetError(std::format("Unable to duplicate display output: 0x{:08X}",
+                                         static_cast<unsigned int>(duplicate_result)));
+                    return std::nullopt;
+                }
+                return result;
+            }
+        }
+        SetError("Target display is unavailable");
+        return std::nullopt;
     }
 
-    void StopCaptureObjects() noexcept {
-        generation_.fetch_add(1);
-        try {
-            if (frame_pool_ && frame_arrived_.value) frame_pool_.FrameArrived(frame_arrived_);
-            frame_arrived_ = {};
-            if (session_) session_.Close();
-            if (frame_pool_) frame_pool_.Close();
-        } catch (...) {
+    void ReadFrames(HMONITOR monitor, Duplication duplication) noexcept {
+        LARGE_INTEGER frequency{};
+        QueryPerformanceFrequency(&frequency);
+        std::optional<std::int64_t> last_timestamp;
+        while (!stop_capture_) {
+            DXGI_OUTDUPL_FRAME_INFO frame{};
+            winrt::com_ptr<IDXGIResource> resource;
+            const auto acquired = duplication.output->AcquireNextFrame(100, &frame, resource.put());
+            if (acquired == DXGI_ERROR_WAIT_TIMEOUT) continue;
+            if (acquired == DXGI_ERROR_ACCESS_LOST) {
+                duplication = {};
+                while (!stop_capture_) {
+                    auto replacement = CreateDuplication(monitor);
+                    if (replacement) {
+                        duplication = std::move(*replacement);
+                        last_timestamp.reset();
+                        SetError({});
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds{250});
+                }
+                continue;
+            }
+            if (FAILED(acquired)) {
+                SetError(std::format("Display telemetry stopped: 0x{:08X}",
+                                     static_cast<unsigned int>(acquired)));
+                break;
+            }
+
+            if (frame.LastPresentTime.QuadPart > 0 && frequency.QuadPart > 0) {
+                const auto timestamp = frame.LastPresentTime.QuadPart;
+                if (last_timestamp && timestamp > *last_timestamp) {
+                    const auto accumulated = std::max(1U, frame.AccumulatedFrames);
+                    const auto milliseconds = static_cast<double>(timestamp - *last_timestamp) * 1000.0 /
+                                              static_cast<double>(frequency.QuadPart) / accumulated;
+                    if (milliseconds > 0.05 && milliseconds <= 1000.0) {
+                        std::scoped_lock lock{mutex_};
+                        for (UINT index = 0; index < accumulated; ++index) {
+                            frame_times_.push_back({Clock::now(), milliseconds});
+                        }
+                        if (frame_times_.size() > 7200) {
+                            frame_times_.erase(frame_times_.begin(), frame_times_.begin() + 1200);
+                        }
+                    }
+                }
+                last_timestamp = timestamp;
+                SetError({});
+            }
+            duplication.output->ReleaseFrame();
         }
-        session_ = nullptr;
-        frame_pool_ = nullptr;
-        item_ = nullptr;
-        device_ = nullptr;
+        capture_running_ = false;
     }
 
     void SetError(std::string value) noexcept {
@@ -301,14 +315,10 @@ private:
     }
 
     std::mutex mutex_;
-    std::atomic_uint64_t generation_{};
-    IDirect3DDevice device_{nullptr};
-    GraphicsCaptureItem item_{nullptr};
-    Direct3D11CaptureFramePool frame_pool_{nullptr};
-    GraphicsCaptureSession session_{nullptr};
-    winrt::event_token frame_arrived_{};
+    std::thread capture_thread_;
+    std::atomic_bool stop_capture_{false};
+    std::atomic_bool capture_running_{false};
     DWORD process_id_{};
-    std::optional<std::int64_t> last_timestamp_;
     std::vector<FramePoint> frame_times_;
     std::string error_;
 };

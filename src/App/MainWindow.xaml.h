@@ -4,6 +4,7 @@
 #include "pch.h"
 
 #include "PerformanceOverlay.h"
+#include "DiscordShareService.h"
 #include "UpdateService.h"
 
 #include "openreplay/Ipc.h"
@@ -21,6 +22,7 @@ struct MainWindow : MainWindowT<MainWindow> {
 
     void Root_KeyDown(IInspectable const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args);
     void SettingsButton_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void GalleryButton_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void CloseButton_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void BackButton_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void SaveReplay_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
@@ -47,11 +49,15 @@ struct MainWindow : MainWindowT<MainWindow> {
     void CheckUpdate_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void UpdateAction_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void OpenReleaseNotes_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void SaveDiscordWebhook_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void ClearDiscordWebhook_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void TestDiscordWebhook_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
 
 private:
     enum class NotificationChannel {
         General,
         ReplaySave,
+        DiscordShare,
         Update,
     };
 
@@ -64,6 +70,7 @@ private:
         std::filesystem::path output;
         bool error{false};
         bool progress{false};
+        bool shareable{false};
         bool entering{true};
         bool animating{false};
         bool hiding{false};
@@ -107,6 +114,9 @@ private:
     void HideOverlay();
     void ToggleOverlay();
     void ShowSettings(bool show);
+    void ShowGallery(bool show);
+    void RefreshGallery();
+    void OpenGalleryClip(const std::filesystem::path& path);
     void LoadSettingsIntoControls();
     void EnumerateMonitors();
     void EnumerateAudioDevices();
@@ -130,6 +140,14 @@ private:
     void PollStatus();
     void ApplyResponse(const openreplay::Response& response);
     void ApplyReplaySaveStatus(const openreplay::Response& response);
+    void ShareReplay(const std::filesystem::path& source, bool webhook);
+    winrt::fire_and_forget ShareReplayAsync(std::filesystem::path source, bool webhook);
+    void CompleteReplayShare(std::filesystem::path output, bool webhook,
+                             openreplay::ui::DiscordUploadResult result);
+    winrt::fire_and_forget TestDiscordWebhookAsync();
+    void CompleteDiscordWebhookTest(openreplay::ui::DiscordUploadResult result);
+    void ForgetInvalidDiscordWebhook();
+    void UpdateDiscordUi();
     void UpdateStorageSpace();
     void UpdatePerformanceOverlaySummary();
     void UpdateUpdateUi();
@@ -153,12 +171,13 @@ private:
     bool RunCommand(std::string_view command, std::wstring_view success_message = {});
     void ShowNotification(std::wstring_view message, bool error = false);
     void ShowToast(std::wstring_view title, std::wstring_view message, bool error, bool progress,
-                   bool auto_hide, const std::filesystem::path& output = {},
-                   NotificationChannel channel = NotificationChannel::General);
+                    bool auto_hide, const std::filesystem::path& output = {},
+                    NotificationChannel channel = NotificationChannel::General,
+                    bool shareable = false);
     void InitializeNotificationWindow();
     void ShowDesktopNotification(std::wstring_view title, std::wstring_view message, bool error,
-                                  bool progress, bool auto_hide, const std::filesystem::path& output,
-                                  NotificationChannel channel);
+                                   bool progress, bool auto_hide, const std::filesystem::path& output,
+                                   NotificationChannel channel, bool shareable);
     void LayoutNotifications();
     void StartNotificationAnimation(DesktopNotification& notification, int target_x, int target_y,
                                     bool hiding, UINT duration_ms);
@@ -167,6 +186,7 @@ private:
     void RemoveNotification(HWND window);
     void OpenNotificationOutput(const DesktopNotification& notification);
     void CopyNotificationOutput(const DesktopNotification& notification);
+    void ShareNotificationOutput(const DesktopNotification& notification, bool webhook);
     void TogglePerformanceOverlay();
     void AddTrayIcon();
     void RemoveTrayIcon();
@@ -232,6 +252,7 @@ private:
     bool recording_hotkey_registered_{false};
     bool visible_{false};
     bool settings_visible_{false};
+    bool gallery_visible_{false};
     bool updating_ui_{false};
     bool english_{true};
     bool exiting_{false};
@@ -253,6 +274,10 @@ private:
     bool update_check_in_flight_{false};
     bool update_download_in_flight_{false};
     bool update_health_published_{false};
+    bool discord_share_in_progress_{false};
+    bool discord_test_in_progress_{false};
+    bool discord_webhook_configured_{false};
+    std::wstring discord_credential_error_;
     int host_poll_failures_{0};
     std::uint64_t replay_save_revision_{0};
     std::chrono::steady_clock::time_point last_host_launch_attempt_{};
@@ -268,6 +293,7 @@ private:
     openreplay::Settings host_settings_;
     openreplay::PipeClient pipe_client_;
     openreplay::ui::PerformanceOverlay performance_overlay_;
+    openreplay::ui::DiscordShareService discord_share_service_;
     openreplay::ui::UpdateService update_service_;
     openreplay::UpdateManifest available_update_;
     std::filesystem::path downloaded_update_;
@@ -286,11 +312,14 @@ private:
     std::vector<AudioLevelIndicator> microphone_device_levels_;
     std::vector<bool> replay_hotkey_registered_;
     std::vector<openreplay::ReplayHotkey> replay_hotkey_draft_;
+    std::deque<std::filesystem::path> pending_discord_uploads_;
 
     Microsoft::UI::Xaml::Controls::Grid root_{nullptr};
     Microsoft::UI::Xaml::Controls::Grid dashboard_panel_{nullptr};
     Microsoft::UI::Xaml::Controls::Grid settings_panel_{nullptr};
+    Microsoft::UI::Xaml::Controls::Grid gallery_panel_{nullptr};
     Microsoft::UI::Xaml::Controls::Button settings_button_{nullptr};
+    Microsoft::UI::Xaml::Controls::Button gallery_button_{nullptr};
     Microsoft::UI::Xaml::Controls::Button back_button_{nullptr};
     Microsoft::UI::Xaml::Controls::Button open_folder_button_{nullptr};
     Microsoft::UI::Xaml::Controls::Button open_logs_button_{nullptr};
@@ -308,6 +337,9 @@ private:
     Microsoft::UI::Xaml::Controls::TextBlock screenshot_state_text_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock settings_title_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock settings_subtitle_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock gallery_title_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock gallery_subtitle_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock gallery_empty_text_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock source_section_title_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock video_section_title_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock input_section_title_{nullptr};
@@ -396,6 +428,17 @@ private:
     Microsoft::UI::Xaml::Controls::TextBlock output_directory_text_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock storage_space_text_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock updates_section_title_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock discord_section_title_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock discord_webhook_label_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock discord_size_label_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock discord_auto_send_label_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock discord_status_text_{nullptr};
+    Microsoft::UI::Xaml::Controls::PasswordBox discord_webhook_input_{nullptr};
+    Microsoft::UI::Xaml::Controls::NumberBox discord_size_input_{nullptr};
+    Microsoft::UI::Xaml::Controls::ToggleSwitch discord_auto_send_toggle_{nullptr};
+    Microsoft::UI::Xaml::Controls::Button discord_save_button_{nullptr};
+    Microsoft::UI::Xaml::Controls::Button discord_clear_button_{nullptr};
+    Microsoft::UI::Xaml::Controls::Button discord_test_button_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock automatic_updates_label_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock developer_updates_label_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock update_version_text_{nullptr};
@@ -408,6 +451,9 @@ private:
     Microsoft::UI::Xaml::Controls::Button save_replay_button_{nullptr};
     Microsoft::UI::Xaml::Controls::Button recording_button_{nullptr};
     Microsoft::UI::Xaml::Controls::Button screenshot_button_{nullptr};
+    Microsoft::UI::Xaml::Controls::Button gallery_back_button_{nullptr};
+    Microsoft::UI::Xaml::Controls::Button gallery_refresh_button_{nullptr};
+    Microsoft::UI::Xaml::Controls::StackPanel gallery_list_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock settings_save_status_{nullptr};
     Microsoft::UI::Xaml::Media::Brush accent_brush_{nullptr};
     Microsoft::UI::Xaml::Media::Brush success_brush_{nullptr};

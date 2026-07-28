@@ -15,10 +15,14 @@ Notable user-facing changes are documented here. Development builds use the
 
 - Added compositor-delivered FPS, 1% low, 0.1% low, frametime, GPU power, and configurable graph metrics to the performance overlay.
 - Added an opt-in developer update channel backed by signed rolling release metadata.
+- Changed the default recording, replay, and screenshot shortcuts from `Ctrl+F9...F12` to `Alt+F9...F12`.
+- Added Discord sharing with H.264/AAC export, dynamic bitrate and size verification, file copy, secure webhook uploads with embeds, and optional automatic sending after replay saves.
 
 ### Fixed
 
 - Opened the sidebar immediately on normal executable launch and removed the startup window flash in background mode.
+- Kept opening the sidebar from restoring fullscreen apps when the desktop is active, removed its taskbar entry, and sized it around the visible taskbar.
+- Removed the Windows capture border from performance telemetry by using borderless DXGI display updates.
 
 - Replaced the fixed 30-second replay-save wait with size-aware mux timeouts and automatic stalled-encoder recovery.
 

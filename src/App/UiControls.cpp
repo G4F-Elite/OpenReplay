@@ -188,6 +188,16 @@ TextBox ControlFactory::HotkeyInput(std::wstring_view placeholder) const {
     return input;
 }
 
+PasswordBox ControlFactory::SecretInput(std::wstring_view placeholder) const {
+    PasswordBox input;
+    StyleInput(input, 38);
+    input.Padding(Thickness{12, 0, 12, 0});
+    input.PasswordRevealMode(PasswordRevealMode::Peek);
+    if (!placeholder.empty()) input.PlaceholderText(winrt::hstring{placeholder});
+    CenterSingleLineInput(input);
+    return input;
+}
+
 NumberBox ControlFactory::NumberInput(double minimum, double maximum, double step) const {
     NumberBox input;
     StyleInput(input, 36);

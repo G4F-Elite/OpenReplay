@@ -32,6 +32,11 @@ using openreplay::ui::Text;
 constexpr UINT_PTR kNotificationAnimationTimer = 1;
 constexpr UINT_PTR kNotificationHideTimer = 2;
 
+struct WipeString {
+    std::wstring& value;
+    ~WipeString() { if (!value.empty()) SecureZeroMemory(value.data(), value.size() * sizeof(wchar_t)); }
+};
+
 std::string Field(const openreplay::Response& response, std::string_view name) {
     const auto found = response.fields.find(std::string{name});
     return found == response.fields.end() ? std::string{} : found->second;
@@ -210,6 +215,19 @@ bool HostProcessRunning() noexcept {
     return true;
 }
 
+bool IsGalleryClip(const std::filesystem::directory_entry& entry) {
+    std::error_code error;
+    if (!entry.is_regular_file(error)) return false;
+    const auto extension = entry.path().extension().wstring();
+    return extension == L".mkv" || extension == L".mp4";
+}
+
+std::wstring GallerySizeText(std::uintmax_t bytes) {
+    const auto mebibytes = static_cast<double>(bytes) / (1024.0 * 1024.0);
+    if (mebibytes < 1.0) return std::to_wstring(bytes / 1024U) + L" KiB";
+    return std::to_wstring(static_cast<unsigned int>(std::lround(mebibytes))) + L" MiB";
+}
+
 }  // namespace
 
 namespace winrt::OpenReplay::implementation {
@@ -327,6 +345,7 @@ void MainWindow::BuildUi() {
     AddColumn(header, 1, GridUnitType::Star);
     AddColumn(header, 0, GridUnitType::Auto);
     AddColumn(header, 0, GridUnitType::Auto);
+    AddColumn(header, 0, GridUnitType::Auto);
     Grid::SetRow(header, 0);
 
     StackPanel brand;
@@ -363,6 +382,14 @@ void MainWindow::BuildUi() {
     Grid::SetColumn(settings_button_, 1);
     header.Children().Append(settings_button_);
 
+    gallery_button_ = controls.ActionButton(L"Clips");
+    gallery_button_.Margin(Thickness{0, 0, 8, 0});
+    gallery_button_.MinWidth(82);
+    gallery_button_.VerticalAlignment(VerticalAlignment::Center);
+    gallery_button_.Click({this, &MainWindow::GalleryButton_Click});
+    Grid::SetColumn(gallery_button_, 2);
+    header.Children().Append(gallery_button_);
+
     auto close_button = controls.ActionButton(L"×");
     close_button.Width(42);
     close_button.Height(42);
@@ -370,7 +397,7 @@ void MainWindow::BuildUi() {
     close_button.FontSize(20);
     close_button.VerticalAlignment(VerticalAlignment::Center);
     close_button.Click({this, &MainWindow::CloseButton_Click});
-    Grid::SetColumn(close_button, 2);
+    Grid::SetColumn(close_button, 3);
     header.Children().Append(close_button);
     layout.Children().Append(header);
 
@@ -981,6 +1008,53 @@ void MainWindow::BuildUi() {
     storage_actions.Children().Append(open_logs_button_);
     storage_section.Children().Append(storage_actions);
 
+    const auto discord_section = create_section(discord_section_title_, L"DISCORD SHARE");
+    discord_status_text_ = Text(L"Webhook is not configured", 11.5, secondary_text_brush_);
+    discord_status_text_.TextWrapping(TextWrapping::Wrap);
+    discord_status_text_.Margin(Thickness{0, 0, 0, 12});
+    discord_section.Children().Append(discord_status_text_);
+
+    discord_webhook_input_ = controls.SecretInput(L"https://discord.com/api/webhooks/...");
+    discord_webhook_input_.PasswordChanged([this](auto&&, auto&&) { UpdateDiscordUi(); });
+    add_field(discord_section, discord_webhook_label_, L"Webhook URL", discord_webhook_input_);
+
+    discord_size_input_ = controls.NumberInput(5, 500, 1);
+    discord_size_input_.ValueChanged([this](auto&&, auto&&) { ScheduleSettingsApply(); });
+    add_field(discord_section, discord_size_label_, L"Maximum upload size, MiB", discord_size_input_);
+
+    Grid discord_auto_send_row;
+    AddColumn(discord_auto_send_row, 1, GridUnitType::Star);
+    AddColumn(discord_auto_send_row, 0, GridUnitType::Auto);
+    discord_auto_send_row.Margin(Thickness{0, 0, 0, 12});
+    discord_auto_send_label_ = Text(L"Send automatically after saving", 12.5, primary_text_brush);
+    discord_auto_send_label_.VerticalAlignment(VerticalAlignment::Center);
+    discord_auto_send_row.Children().Append(discord_auto_send_label_);
+    discord_auto_send_toggle_ = controls.Toggle();
+    discord_auto_send_toggle_.HorizontalAlignment(HorizontalAlignment::Right);
+    discord_auto_send_toggle_.Toggled([this](auto&&, auto&&) { ScheduleSettingsApply(); });
+    Grid::SetColumn(discord_auto_send_toggle_, 1);
+    discord_auto_send_row.Children().Append(discord_auto_send_toggle_);
+    discord_section.Children().Append(discord_auto_send_row);
+
+    Grid discord_actions;
+    AddColumn(discord_actions, 1, GridUnitType::Star);
+    AddColumn(discord_actions, 1, GridUnitType::Star);
+    discord_save_button_ = controls.ActionButton(L"Save webhook", ButtonKind::Accent);
+    discord_save_button_.Margin(Thickness{0, 0, 6, 0});
+    discord_save_button_.Click({this, &MainWindow::SaveDiscordWebhook_Click});
+    discord_actions.Children().Append(discord_save_button_);
+    discord_test_button_ = controls.ActionButton(L"Test");
+    discord_test_button_.Margin(Thickness{6, 0, 0, 0});
+    discord_test_button_.Click({this, &MainWindow::TestDiscordWebhook_Click});
+    Grid::SetColumn(discord_test_button_, 1);
+    discord_actions.Children().Append(discord_test_button_);
+    discord_section.Children().Append(discord_actions);
+    discord_clear_button_ = controls.ActionButton(L"Remove webhook");
+    discord_clear_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
+    discord_clear_button_.Margin(Thickness{0, 8, 0, 0});
+    discord_clear_button_.Click({this, &MainWindow::ClearDiscordWebhook_Click});
+    discord_section.Children().Append(discord_clear_button_);
+
     const auto updates_section = create_section(updates_section_title_, L"UPDATES");
     update_version_text_ = Text(L"OpenReplay " + openreplay::FromUtf8(openreplay::kVersion) +
                                     (openreplay::kReleaseChannel == "dev" ? L" · Dev" : L" · Stable"),
@@ -1067,6 +1141,52 @@ void MainWindow::BuildUi() {
     Grid::SetRow(save_status_surface, 2);
     settings_panel_.Children().Append(save_status_surface);
     layout.Children().Append(settings_panel_);
+
+    gallery_panel_ = Grid{};
+    gallery_panel_.Padding(Thickness{20, 18, 20, 16});
+    gallery_panel_.Visibility(Visibility::Collapsed);
+    AddRow(gallery_panel_, 0, GridUnitType::Auto);
+    AddRow(gallery_panel_, 1, GridUnitType::Star);
+    AddRow(gallery_panel_, 0, GridUnitType::Auto);
+    Grid::SetRow(gallery_panel_, 2);
+
+    Grid gallery_header;
+    AddColumn(gallery_header, 1, GridUnitType::Star);
+    AddColumn(gallery_header, 0, GridUnitType::Auto);
+    StackPanel gallery_heading;
+    gallery_title_ = Text(L"Clips", 27, primary_text_brush);
+    gallery_title_.FontWeight(Windows::UI::Text::FontWeights::Bold());
+    gallery_subtitle_ = Text(L"Existing recordings and replays", 12.5, secondary_text_brush_);
+    gallery_subtitle_.Margin(Thickness{0, 5, 0, 0});
+    gallery_subtitle_.TextWrapping(TextWrapping::Wrap);
+    gallery_heading.Children().Append(gallery_title_);
+    gallery_heading.Children().Append(gallery_subtitle_);
+    gallery_header.Children().Append(gallery_heading);
+    gallery_refresh_button_ = controls.ActionButton(L"Refresh");
+    gallery_refresh_button_.Click([this](auto&&, auto&&) { RefreshGallery(); });
+    Grid::SetColumn(gallery_refresh_button_, 1);
+    gallery_header.Children().Append(gallery_refresh_button_);
+    gallery_panel_.Children().Append(gallery_header);
+
+    ScrollViewer gallery_scroll;
+    gallery_scroll.Margin(Thickness{0, 18, 0, 12});
+    gallery_scroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
+    gallery_scroll.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+    Grid::SetRow(gallery_scroll, 1);
+    gallery_list_ = StackPanel{};
+    gallery_list_.Spacing(10);
+    gallery_empty_text_ = Text(L"No clips found", 13, secondary_text_brush_);
+    gallery_empty_text_.TextWrapping(TextWrapping::Wrap);
+    gallery_empty_text_.Margin(Thickness{0, 10, 0, 0});
+    gallery_list_.Children().Append(gallery_empty_text_);
+    gallery_scroll.Content(gallery_list_);
+    gallery_panel_.Children().Append(gallery_scroll);
+
+    gallery_back_button_ = controls.ActionButton(L"Back");
+    gallery_back_button_.Click([this](auto&&, auto&&) { ShowGallery(false); });
+    Grid::SetRow(gallery_back_button_, 2);
+    gallery_panel_.Children().Append(gallery_back_button_);
+    layout.Children().Append(gallery_panel_);
 
     Grid footer;
     footer.Padding(Thickness{20, 0, 20, 0});
@@ -1517,6 +1637,10 @@ bool MainWindow::PositionOverlayWindow() {
     style &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);
     style |= WS_POPUP;
     SetWindowLongPtrW(window, GWL_STYLE, style);
+    auto extended_style = GetWindowLongPtrW(window, GWL_EXSTYLE);
+    extended_style &= ~WS_EX_APPWINDOW;
+    extended_style |= WS_EX_TOOLWINDOW;
+    SetWindowLongPtrW(window, GWL_EXSTYLE, extended_style);
     const auto monitor_width = area.bounds.right - area.bounds.left;
     const auto dpi = openreplay::ui::WindowDpi(window);
     auto panel_width = openreplay::ui::ScaleForDpi(520, dpi);
@@ -1528,20 +1652,34 @@ bool MainWindow::PositionOverlayWindow() {
 }
 
 void MainWindow::ShowOnLaunch() {
+    const auto window_handle = GetWindowHandle();
+    const bool desktop = openreplay::ui::ForegroundMonitorArea(window_handle).desktop;
     if (visible_ || !PositionOverlayWindow()) return;
     Microsoft::UI::Xaml::Window window = *this;
-    window.Activate();
-    const auto window_handle = GetWindowHandle();
-    ShowWindow(window_handle, SW_SHOW);
-    SetForegroundWindow(window_handle);
-    SettingsButton().Focus(FocusState::Programmatic);
+    if (desktop) {
+        window.AppWindow().Show(false);
+    } else {
+        window.Activate();
+        ShowWindow(window_handle, SW_SHOW);
+        SetForegroundWindow(window_handle);
+        SettingsButton().Focus(FocusState::Programmatic);
+    }
     visible_ = true;
     PollStatus();
 }
 
 void MainWindow::ShowOverlay() {
-    if (visible_ || !PositionOverlayWindow()) return;
+    if (visible_) return;
     const auto window = GetWindowHandle();
+    const bool desktop = openreplay::ui::ForegroundMonitorArea(window).desktop;
+    if (!PositionOverlayWindow()) return;
+    if (desktop) {
+        Microsoft::UI::Xaml::Window xaml_window = *this;
+        xaml_window.AppWindow().Show(false);
+        visible_ = true;
+        PollStatus();
+        return;
+    }
     if (!AnimateWindow(window, 170, AW_ACTIVATE | AW_SLIDE | AW_HOR_POSITIVE)) {
         ShowWindow(window, SW_SHOW);
     }
@@ -1571,14 +1709,121 @@ void MainWindow::ShowSettings(bool show) {
         ApplySettingsFromControls(false);
     }
     settings_visible_ = show;
+    gallery_visible_ = false;
     DashboardPanel().Visibility(show ? Visibility::Collapsed : Visibility::Visible);
     SettingsPanel().Visibility(show ? Visibility::Visible : Visibility::Collapsed);
+    gallery_panel_.Visibility(Visibility::Collapsed);
     if (show) {
         LoadSettingsIntoControls();
         MonitorSelector().Focus(FocusState::Programmatic);
     } else {
         SettingsButton().Focus(FocusState::Programmatic);
     }
+}
+
+void MainWindow::ShowGallery(bool show) {
+    if (show && settings_apply_pending_) {
+        settings_apply_timer_.Stop();
+        ApplySettingsFromControls(false);
+    }
+    settings_visible_ = false;
+    gallery_visible_ = show;
+    DashboardPanel().Visibility(show ? Visibility::Collapsed : Visibility::Visible);
+    SettingsPanel().Visibility(Visibility::Collapsed);
+    gallery_panel_.Visibility(show ? Visibility::Visible : Visibility::Collapsed);
+    if (show) {
+        RefreshGallery();
+        gallery_refresh_button_.Focus(FocusState::Programmatic);
+    } else {
+        SettingsButton().Focus(FocusState::Programmatic);
+    }
+}
+
+void MainWindow::RefreshGallery() {
+    if (!gallery_list_) return;
+    using namespace Microsoft::UI::Xaml;
+    using namespace Microsoft::UI::Xaml::Controls;
+
+    while (gallery_list_.Children().Size() > 1) gallery_list_.Children().RemoveAtEnd();
+    std::vector<std::filesystem::path> clips;
+    std::error_code error;
+    if (std::filesystem::exists(settings_.output_directory, error)) {
+        for (const std::filesystem::directory_entry entry : std::filesystem::directory_iterator(
+                 settings_.output_directory, std::filesystem::directory_options::skip_permission_denied, error)) {
+            if (!error && IsGalleryClip(entry)) clips.push_back(entry.path());
+            error.clear();
+        }
+    }
+    std::ranges::sort(clips, [](const auto& left, const auto& right) {
+        std::error_code left_error;
+        std::error_code right_error;
+        const auto left_time = std::filesystem::last_write_time(left, left_error);
+        const auto right_time = std::filesystem::last_write_time(right, right_error);
+        if (left_error || right_error) return left.filename().wstring() > right.filename().wstring();
+        return left_time > right_time;
+    });
+    gallery_empty_text_.Visibility(clips.empty() ? Visibility::Visible : Visibility::Collapsed);
+    gallery_empty_text_.Text(clips.empty()
+        ? (english_ ? L"No MKV or MP4 clips found in the output folder"
+                    : L"В папке сохранения нет клипов MKV или MP4")
+        : L"");
+    if (clips.empty()) return;
+
+    const auto theme = DarkTheme();
+    const ControlFactory controls{theme};
+    for (const auto& path : clips) {
+        Border card;
+        card.Background(theme.card);
+        card.BorderBrush(theme.border);
+        card.BorderThickness(Thickness{1, 1, 1, 1});
+        card.CornerRadius(CornerRadius{8, 8, 8, 8});
+        card.Padding(Thickness{14, 12, 14, 12});
+
+        StackPanel content;
+        Grid header;
+        AddColumn(header, 1, GridUnitType::Star);
+        AddColumn(header, 0, GridUnitType::Auto);
+        auto title = Text(path.filename().wstring(), 14, theme.primary_text);
+        title.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
+        title.TextTrimming(TextTrimming::CharacterEllipsis);
+        title.TextWrapping(TextWrapping::NoWrap);
+        header.Children().Append(title);
+        std::error_code size_error;
+        const auto size = std::filesystem::file_size(path, size_error);
+        auto details = Text(size_error ? L"Video" : GallerySizeText(size), 11.5, theme.secondary_text);
+        details.Margin(Thickness{12, 0, 0, 0});
+        Grid::SetColumn(details, 1);
+        header.Children().Append(details);
+        content.Children().Append(header);
+
+        Grid actions;
+        AddColumn(actions, 1, GridUnitType::Star);
+        AddColumn(actions, 1, GridUnitType::Star);
+        AddColumn(actions, 1, GridUnitType::Star);
+        actions.Margin(Thickness{0, 10, 0, 0});
+        auto open = controls.ActionButton(english_ ? L"Open" : L"Открыть");
+        open.Margin(Thickness{0, 0, 4, 0});
+        open.Click([this, path](auto&&, auto&&) { OpenGalleryClip(path); });
+        actions.Children().Append(open);
+        auto discord_copy = controls.ActionButton(english_ ? L"Discord copy" : L"Копия Discord");
+        discord_copy.Margin(Thickness{4, 0, 4, 0});
+        discord_copy.Click([this, path](auto&&, auto&&) { ShareReplay(path, false); });
+        Grid::SetColumn(discord_copy, 1);
+        actions.Children().Append(discord_copy);
+        auto webhook = controls.ActionButton(english_ ? L"Send webhook" : L"Webhook");
+        webhook.Margin(Thickness{4, 0, 0, 0});
+        webhook.IsEnabled(discord_webhook_configured_);
+        webhook.Click([this, path](auto&&, auto&&) { ShareReplay(path, true); });
+        Grid::SetColumn(webhook, 2);
+        actions.Children().Append(webhook);
+        content.Children().Append(actions);
+        card.Child(content);
+        gallery_list_.Children().Append(card);
+    }
+}
+
+void MainWindow::OpenGalleryClip(const std::filesystem::path& path) {
+    ShellExecuteW(GetWindowHandle(), L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 void MainWindow::LoadSettingsIntoControls() {
@@ -1623,6 +1868,14 @@ void MainWindow::LoadSettingsIntoControls() {
     start_with_windows_toggle_.IsOn(settings_.start_with_windows);
     automatic_updates_toggle_.IsOn(settings_.automatic_updates);
     developer_updates_toggle_.IsOn(settings_.developer_updates);
+    discord_credential_error_.clear();
+    discord_webhook_configured_ = discord_share_service_.HasWebhook(&discord_credential_error_);
+    const bool discord_settings_reconciled = !discord_webhook_configured_ && discord_credential_error_.empty() &&
+                                              settings_.discord_auto_send;
+    if (discord_settings_reconciled) settings_.discord_auto_send = false;
+    discord_webhook_input_.Password(L"");
+    discord_size_input_.Value(settings_.discord_target_megabytes);
+    discord_auto_send_toggle_.IsOn(settings_.discord_auto_send && discord_webhook_configured_);
     LanguageSelector().SelectedIndex(english_ ? 1 : 0);
     OutputDirectoryText().Text(settings_.output_directory.wstring());
     EnumerateMonitors();
@@ -1633,11 +1886,13 @@ void MainWindow::LoadSettingsIntoControls() {
     recording_hotkey_input_.Text(openreplay::FromUtf8(settings_.recording_hotkey_chord));
     replay_hotkey_draft_ = settings_.replay_hotkeys;
     RebuildReplayHotkeyRows();
-    if (audio_settings_reconciled_) {
+    if (audio_settings_reconciled_ || discord_settings_reconciled) {
         try {
             settings_store_.Save(settings_);
-            audio_restore_notification_pending_ = true;
-            QueueHostSettingsApply(true);
+            if (audio_settings_reconciled_) {
+                audio_restore_notification_pending_ = true;
+                QueueHostSettingsApply(true);
+            }
         } catch (...) {
         }
         audio_settings_reconciled_ = false;
@@ -1646,6 +1901,7 @@ void MainWindow::LoadSettingsIntoControls() {
     UpdateReplaySizeEstimate();
     UpdateStorageSpace();
     UpdatePerformanceOverlaySummary();
+    UpdateDiscordUi();
     UpdateUpdateUi();
     performance_overlay_.ApplySettings(settings_, english_);
     LayoutNotifications();
@@ -1872,11 +2128,15 @@ void MainWindow::ApplyLanguage() {
                                            : L"Сохранение в исходном разрешении выбранного монитора.");
     set(SettingsTitle(), english_ ? L"Settings" : L"Настройки");
     set(SettingsSubtitle(), english_ ? L"Changes save automatically"
-                                       : L"Изменения сохраняются автоматически");
+                                        : L"Изменения сохраняются автоматически");
+    set(gallery_title_, english_ ? L"Clips" : L"Клипы");
+    set(gallery_subtitle_, english_ ? L"Existing recordings and replays"
+                                    : L"Существующие записи и повторы");
     set(source_section_title_, english_ ? L"SOURCE" : L"ИСТОЧНИК");
     set(video_section_title_, english_ ? L"VIDEO" : L"ВИДЕО");
     set(input_section_title_, english_ ? L"INTERFACE AND INPUT" : L"ИНТЕРФЕЙС И ВВОД");
     set(storage_section_title_, english_ ? L"STORAGE" : L"ХРАНИЛИЩЕ");
+    set(discord_section_title_, english_ ? L"DISCORD SHARE" : L"DISCORD");
     set(updates_section_title_, english_ ? L"UPDATES" : L"ОБНОВЛЕНИЯ");
     set(MonitorLabel(), english_ ? L"Monitor" : L"Монитор");
     set(DesktopAudioLabel(), english_ ? L"Desktop audio outputs" : L"Системный звук");
@@ -1892,6 +2152,10 @@ void MainWindow::ApplyLanguage() {
     set(LanguageLabel(), english_ ? L"Language" : L"Язык");
     set(OutputLabel(), english_ ? L"Output folder" : L"Папка сохранения");
     set(OutputFormatLabel(), english_ ? L"Video format" : L"Формат видео");
+    set(discord_webhook_label_, english_ ? L"Webhook URL" : L"Webhook URL");
+    set(discord_size_label_, english_ ? L"Maximum upload size, MiB" : L"Максимальный размер, МиБ");
+    set(discord_auto_send_label_, english_ ? L"Send automatically after saving"
+                                            : L"Отправлять автоматически после сохранения");
     set(microphone_label_, english_ ? L"Microphone" : L"Микрофон");
     set(cursor_label_, english_ ? L"Capture cursor" : L"Захватывать курсор");
     set(start_with_windows_label_, english_ ? L"Start with Windows" : L"Запускать вместе с Windows");
@@ -1949,6 +2213,8 @@ void MainWindow::ApplyLanguage() {
     automatic_updates_toggle_.OffContent(nullptr);
     developer_updates_toggle_.OnContent(nullptr);
     developer_updates_toggle_.OffContent(nullptr);
+    discord_auto_send_toggle_.OnContent(nullptr);
+    discord_auto_send_toggle_.OffContent(nullptr);
     const auto replay_action = english_ ? L"Save last " + std::to_wstring(settings_.replay_seconds) + L" sec"
                                         : L"Сохранить последние " + std::to_wstring(settings_.replay_seconds) + L" сек";
     SaveReplayButton().Content(winrt::box_value(replay_action));
@@ -1958,12 +2224,19 @@ void MainWindow::ApplyLanguage() {
                                            : L"Изменения сохраняются автоматически");
     }
     back_button_.Content(winrt::box_value(english_ ? L"← Back" : L"← Назад"));
+    gallery_button_.Content(winrt::box_value(english_ ? L"Clips" : L"Клипы"));
+    gallery_refresh_button_.Content(winrt::box_value(english_ ? L"Refresh" : L"Обновить"));
+    gallery_back_button_.Content(winrt::box_value(english_ ? L"Back" : L"Назад"));
     open_folder_button_.Content(winrt::box_value(english_ ? L"Recordings" : L"Записи"));
     open_logs_button_.Content(winrt::box_value(english_ ? L"Logs" : L"Логи"));
+    discord_save_button_.Content(winrt::box_value(english_ ? L"Save webhook" : L"Сохранить webhook"));
+    discord_clear_button_.Content(winrt::box_value(english_ ? L"Remove webhook" : L"Удалить webhook"));
+    discord_test_button_.Content(winrt::box_value(english_ ? L"Test" : L"Проверить"));
     check_update_button_.Content(winrt::box_value(english_ ? L"Check now" : L"Проверить"));
     release_notes_button_.Content(winrt::box_value(english_ ? L"Release notes" : L"Что нового"));
     RecordingButton().Content(winrt::box_value(recording_ ? (english_ ? L"Stop recording" : L"Остановить запись")
                                                           : (english_ ? L"Start recording" : L"Начать запись")));
+    if (gallery_visible_) RefreshGallery();
 
     const auto quality_items = QualitySelector().Items();
     quality_items.GetAt(0).as<ComboBoxItem>().Content(winrt::box_value(english_ ? L"Performance" : L"Производительность"));
@@ -1979,6 +2252,7 @@ void MainWindow::ApplyLanguage() {
     UpdateReplaySizeEstimate();
     UpdateAudioDeviceSummaries();
     UpdatePerformanceOverlaySummary();
+    UpdateDiscordUi();
     last_storage_update_ = {};
     UpdateStorageSpace();
     UpdateUpdateUi();
@@ -2571,8 +2845,252 @@ void MainWindow::ApplyReplaySaveStatus(const openreplay::Response& response) {
     const auto filename = path.filename().wstring();
     ShowToast(english_ ? L"Replay saved" : L"Повтор сохранён",
               filename.empty() ? path.wstring() : filename, false, false, true, path,
-              NotificationChannel::ReplaySave);
+              NotificationChannel::ReplaySave, true);
     openreplay::ui::TraceStartup(L"Replay saved: " + path.wstring());
+    if (settings_.discord_auto_send && discord_webhook_configured_) ShareReplay(path, true);
+    if (gallery_visible_) RefreshGallery();
+}
+
+void MainWindow::ShareReplay(const std::filesystem::path& source, bool webhook) {
+    if (discord_share_in_progress_) {
+        if (webhook) {
+            pending_discord_uploads_.push_back(source);
+            ShowNotification(english_ ? L"Discord upload queued"
+                                       : L"Отправка в Discord добавлена в очередь");
+            return;
+        }
+        ShowNotification(english_ ? L"Another Discord export is already running"
+                                   : L"Другая подготовка для Discord уже выполняется", true);
+        return;
+    }
+    if (webhook && !discord_webhook_configured_) {
+        ShowNotification(english_ ? L"Configure a Discord webhook in Settings first"
+                                   : L"Сначала настройте Discord webhook", true);
+        return;
+    }
+    discord_share_in_progress_ = true;
+    UpdateDiscordUi();
+    std::error_code size_error;
+    const auto target_bytes = static_cast<std::uintmax_t>(settings_.discord_target_megabytes) * 1024U * 1024U;
+    const auto source_size = std::filesystem::file_size(source, size_error);
+    const bool needs_encoding = size_error || source_size > target_bytes;
+    ShowToast(webhook ? (english_ ? L"Sending to Discord" : L"Отправка в Discord")
+                      : (english_ ? L"Preparing Discord clip" : L"Подготовка для Discord"),
+              needs_encoding
+                  ? (english_ ? L"Encoding H.264/AAC under the configured size limit..."
+                              : L"Кодируем H.264/AAC под заданный лимит размера...")
+                  : (english_ ? L"File already fits; using the original without re-encoding..."
+                              : L"Файл уже подходит; отправляем оригинал без перекодирования..."),
+              false, true, false, {}, NotificationChannel::DiscordShare);
+    ShareReplayAsync(source, webhook);
+}
+
+winrt::fire_and_forget MainWindow::ShareReplayAsync(std::filesystem::path source, bool webhook) {
+    const auto dispatcher = DispatcherQueue();
+    const auto weak = get_weak();
+    const auto target_megabytes = settings_.discord_target_megabytes;
+    const auto source_fps = settings_.fps;
+    const auto fallback_error = english_ ? std::wstring{L"Discord export failed"}
+                                         : std::wstring{L"Не удалось подготовить файл для Discord"};
+    openreplay::ui::DiscordShareService service;
+    std::filesystem::path output;
+    openreplay::ui::DiscordUploadResult result;
+    try {
+        const auto file = co_await service.ExportAsync(source, target_megabytes, source_fps);
+        output = std::filesystem::path{file.Path().c_str()};
+        if (webhook) {
+            co_await winrt::resume_background();
+            std::wstring error;
+            bool webhook_invalid = false;
+            auto webhook_url = service.LoadWebhook(error, &webhook_invalid);
+            WipeString wipe_webhook{webhook_url};
+            result = webhook_url.empty()
+                ? openreplay::ui::DiscordUploadResult{
+                      .webhook_invalid = webhook_invalid,
+                      .error = error.empty() ? L"Discord webhook is not configured" : std::move(error)}
+                : service.Upload(webhook_url, output);
+        } else {
+            result.ok = true;
+        }
+    } catch (const winrt::hresult_error& error) {
+        result.error = error.message();
+    } catch (const std::exception& error) {
+        result.error = openreplay::FromUtf8(error.what());
+    } catch (...) {
+        result.error = fallback_error;
+    }
+    dispatcher.TryEnqueue([weak, output = std::move(output), webhook, result = std::move(result)]() mutable {
+        if (const auto self = weak.get()) {
+            self->CompleteReplayShare(std::move(output), webhook, std::move(result));
+        }
+    });
+}
+
+void MainWindow::CompleteReplayShare(std::filesystem::path output, bool webhook,
+                                     openreplay::ui::DiscordUploadResult result) {
+    discord_share_in_progress_ = false;
+    if (result.webhook_invalid) ForgetInvalidDiscordWebhook();
+    UpdateDiscordUi();
+    if (!result.ok) {
+        const auto message = result.error.empty()
+            ? (english_ ? L"Discord operation failed" : L"Операция Discord не выполнена")
+            : result.error;
+        ShowToast(webhook ? (english_ ? L"Discord upload failed" : L"Ошибка отправки в Discord")
+                          : (english_ ? L"Discord export failed" : L"Ошибка подготовки для Discord"),
+                  message, true, false, true, output, NotificationChannel::DiscordShare);
+    } else if (webhook) {
+        ShowToast(english_ ? L"Sent to Discord" : L"Отправлено в Discord",
+                  output.filename().wstring(), false, false, true, output,
+                  NotificationChannel::DiscordShare);
+    } else if (!openreplay::ui::DiscordShareService::CopyFileToClipboard(GetWindowHandle(), output)) {
+        ShowToast(english_ ? L"Discord clip is ready" : L"Клип для Discord готов",
+                  english_ ? L"Unable to copy the file; open its folder instead"
+                           : L"Не удалось скопировать файл; откройте его папку",
+                  true, false, true, output, NotificationChannel::DiscordShare);
+    } else {
+        ShowToast(english_ ? L"Discord clip copied" : L"Клип для Discord скопирован",
+                  english_ ? L"Paste it into Discord with Ctrl+V"
+                           : L"Вставьте его в Discord через Ctrl+V",
+                  false, false, true, output, NotificationChannel::DiscordShare);
+    }
+    if (discord_webhook_configured_ && !pending_discord_uploads_.empty()) {
+        auto next = std::move(pending_discord_uploads_.front());
+        pending_discord_uploads_.pop_front();
+        ShareReplay(next, true);
+    }
+}
+
+void MainWindow::UpdateDiscordUi() {
+    if (!discord_status_text_ || !discord_webhook_input_ || !discord_auto_send_toggle_) return;
+    const bool has_draft = !discord_webhook_input_.Password().empty();
+    discord_save_button_.IsEnabled(has_draft && !discord_test_in_progress_ && !discord_share_in_progress_);
+    discord_test_button_.IsEnabled(discord_webhook_configured_ && !discord_test_in_progress_ &&
+                                   !discord_share_in_progress_);
+    discord_clear_button_.IsEnabled(discord_webhook_configured_ && !discord_test_in_progress_ &&
+                                    !discord_share_in_progress_);
+    discord_auto_send_toggle_.IsEnabled(discord_webhook_configured_ && !discord_share_in_progress_);
+    if (!discord_webhook_configured_ && discord_auto_send_toggle_.IsOn()) {
+        updating_ui_ = true;
+        discord_auto_send_toggle_.IsOn(false);
+        updating_ui_ = false;
+    }
+    if (discord_test_in_progress_) {
+        discord_status_text_.Text(english_ ? L"Sending a test message..." : L"Отправка тестового сообщения...");
+    } else if (discord_share_in_progress_) {
+        discord_status_text_.Text(english_ ? L"Preparing or uploading a replay..."
+                                           : L"Подготовка или отправка повтора...");
+    } else if (has_draft) {
+        discord_status_text_.Text(english_ ? L"Webhook URL is ready to save securely"
+                                           : L"Webhook URL готов к безопасному сохранению");
+    } else if (!discord_credential_error_.empty()) {
+        discord_status_text_.Text(english_ ? L"Windows Credential Manager is unavailable"
+                                           : L"Диспетчер учётных данных Windows недоступен");
+    } else if (discord_webhook_configured_) {
+        discord_status_text_.Text(english_ ? L"Webhook is stored in Windows Credential Manager"
+                                           : L"Webhook хранится в диспетчере учётных данных Windows");
+    } else {
+        discord_status_text_.Text(english_ ? L"Webhook is not configured"
+                                           : L"Webhook не настроен");
+    }
+}
+
+void MainWindow::SaveDiscordWebhook_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    std::wstring value{discord_webhook_input_.Password()};
+    WipeString wipe_value{value};
+    std::wstring error;
+    if (value.empty() || !discord_share_service_.StoreWebhook(value, error)) {
+        ShowNotification(error.empty() ? (english_ ? L"Enter a Discord webhook URL"
+                                                    : L"Введите Discord webhook URL")
+                                       : error,
+                         true);
+        return;
+    }
+    discord_webhook_input_.Password(L"");
+    discord_webhook_configured_ = true;
+    discord_credential_error_.clear();
+    UpdateDiscordUi();
+    ShowNotification(english_ ? L"Discord webhook saved securely"
+                               : L"Discord webhook безопасно сохранён");
+}
+
+void MainWindow::ClearDiscordWebhook_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    std::wstring error;
+    if (!discord_share_service_.RemoveWebhook(error)) {
+        ShowNotification(error.empty() ? (english_ ? L"Unable to remove the Discord webhook"
+                                                    : L"Не удалось удалить Discord webhook")
+                                       : error,
+                         true);
+        return;
+    }
+    discord_webhook_configured_ = false;
+    discord_credential_error_.clear();
+    pending_discord_uploads_.clear();
+    discord_auto_send_toggle_.IsOn(false);
+    ScheduleSettingsApply();
+    UpdateDiscordUi();
+    ShowNotification(english_ ? L"Discord webhook removed" : L"Discord webhook удалён");
+}
+
+void MainWindow::TestDiscordWebhook_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    if (!discord_webhook_configured_ || discord_test_in_progress_) return;
+    discord_test_in_progress_ = true;
+    UpdateDiscordUi();
+    TestDiscordWebhookAsync();
+}
+
+winrt::fire_and_forget MainWindow::TestDiscordWebhookAsync() {
+    const auto dispatcher = DispatcherQueue();
+    const auto weak = get_weak();
+    openreplay::ui::DiscordShareService service;
+    co_await winrt::resume_background();
+    openreplay::ui::DiscordUploadResult result;
+    try {
+        std::wstring error;
+        bool webhook_invalid = false;
+        auto webhook = service.LoadWebhook(error, &webhook_invalid);
+        WipeString wipe_webhook{webhook};
+        result = webhook.empty()
+            ? openreplay::ui::DiscordUploadResult{
+                  .webhook_invalid = webhook_invalid,
+                  .error = error.empty() ? L"Discord webhook is not configured" : std::move(error)}
+            : service.Test(webhook);
+    } catch (const winrt::hresult_error& error) {
+        result.error = error.message();
+    } catch (const std::exception& error) {
+        result.error = openreplay::FromUtf8(error.what());
+    } catch (...) {
+        result.error = L"Discord webhook test failed";
+    }
+    dispatcher.TryEnqueue([weak, result = std::move(result)]() mutable {
+        if (const auto self = weak.get()) self->CompleteDiscordWebhookTest(std::move(result));
+    });
+}
+
+void MainWindow::CompleteDiscordWebhookTest(openreplay::ui::DiscordUploadResult result) {
+    discord_test_in_progress_ = false;
+    if (result.webhook_invalid) ForgetInvalidDiscordWebhook();
+    UpdateDiscordUi();
+    ShowToast(result.ok ? (english_ ? L"Discord webhook works" : L"Discord webhook работает")
+                        : (english_ ? L"Discord webhook failed" : L"Ошибка Discord webhook"),
+              result.ok ? (english_ ? L"Test message sent" : L"Тестовое сообщение отправлено")
+                        : result.error,
+              !result.ok, false, true, {}, NotificationChannel::DiscordShare);
+}
+
+void MainWindow::ForgetInvalidDiscordWebhook() {
+    std::wstring error;
+    if (!discord_share_service_.RemoveWebhook(error)) discord_credential_error_ = std::move(error);
+    else discord_credential_error_.clear();
+    discord_webhook_configured_ = false;
+    settings_.discord_auto_send = false;
+    pending_discord_uploads_.clear();
+    updating_ui_ = true;
+    discord_auto_send_toggle_.IsOn(false);
+    updating_ui_ = false;
+    try {
+        settings_store_.Save(settings_);
+    } catch (...) {
+    }
 }
 
 bool MainWindow::RunCommand(std::string_view command, std::wstring_view success_message) {
@@ -2598,8 +3116,9 @@ void MainWindow::ShowNotification(std::wstring_view message, bool error) {
 }
 
 void MainWindow::ShowToast(std::wstring_view title, std::wstring_view message, bool error, bool progress,
-                            bool auto_hide, const std::filesystem::path& output, NotificationChannel channel) {
-    ShowDesktopNotification(title, message, error, progress, auto_hide, output, channel);
+                            bool auto_hide, const std::filesystem::path& output, NotificationChannel channel,
+                            bool shareable) {
+    ShowDesktopNotification(title, message, error, progress, auto_hide, output, channel, shareable);
 }
 
 void MainWindow::InitializeNotificationWindow() {
@@ -2622,8 +3141,8 @@ void MainWindow::InitializeNotificationWindow() {
 }
 
 void MainWindow::ShowDesktopNotification(std::wstring_view title, std::wstring_view message, bool error,
-                                          bool progress, bool auto_hide, const std::filesystem::path& output,
-                                          NotificationChannel channel) {
+                                           bool progress, bool auto_hide, const std::filesystem::path& output,
+                                           NotificationChannel channel, bool shareable) {
     InitializeNotificationWindow();
     if (!notification_class_registered_) return;
 
@@ -2658,7 +3177,9 @@ void MainWindow::ShowDesktopNotification(std::wstring_view title, std::wstring_v
     notification->output = output;
     notification->error = error;
     notification->progress = progress;
-    notification->display_ms = auto_hide ? (error ? 6500U : (progress ? 10000U : 4500U)) : 0U;
+    notification->shareable = shareable;
+    notification->display_ms = auto_hide
+        ? (error ? 6500U : (progress ? 10000U : (shareable ? 12000U : 4500U))) : 0U;
     notification->hiding = false;
     notification->hide_timer_started = false;
     notification->width = 0;
@@ -2694,7 +3215,8 @@ void MainWindow::LayoutNotifications() {
         auto& notification = *item;
         if (!notification.window || notification.hiding) continue;
         const auto width = openreplay::ui::ScaleForDpi(390, dpi);
-        const auto height = openreplay::ui::ScaleForDpi(notification.output.empty() ? 96 : 126, dpi);
+        const auto height = openreplay::ui::ScaleForDpi(
+            notification.output.empty() ? 96 : notification.shareable ? 154 : 126, dpi);
         notification.width = width;
         notification.height = height;
         notification.hidden_x = area.bounds.right + openreplay::ui::ScaleForDpi(8, dpi);
@@ -2791,6 +3313,11 @@ void MainWindow::CopyNotificationOutput(const DesktopNotification& notification)
         }
     }
     CloseClipboard();
+}
+
+void MainWindow::ShareNotificationOutput(const DesktopNotification& notification, bool webhook) {
+    if (notification.output.empty()) return;
+    ShareReplay(notification.output, webhook);
 }
 
 void MainWindow::TogglePerformanceOverlay() {
@@ -2890,6 +3417,14 @@ LRESULT CALLBACK MainWindow::NotificationWindowProc(HWND window, UINT message, W
             RECT copy_rect{scale(160), scale(92), scale(300), scale(116)};
             DrawTextW(dc, self->english_ ? L"Open folder" : L"Открыть папку", -1, &open_rect, DT_SINGLELINE);
             DrawTextW(dc, self->english_ ? L"Copy path" : L"Копировать путь", -1, &copy_rect, DT_SINGLELINE);
+            if (notification->shareable) {
+                RECT share_rect{scale(20), scale(120), scale(175), scale(146)};
+                RECT webhook_rect{scale(190), scale(120), scale(360), scale(146)};
+                DrawTextW(dc, self->english_ ? L"Discord copy" : L"Копия для Discord", -1,
+                          &share_rect, DT_SINGLELINE);
+                DrawTextW(dc, self->english_ ? L"Send webhook" : L"Отправить webhook", -1,
+                          &webhook_rect, DT_SINGLELINE);
+            }
         }
         SelectObject(dc, old_font);
         if (title_font) DeleteObject(title_font);
@@ -2898,12 +3433,20 @@ LRESULT CALLBACK MainWindow::NotificationWindowProc(HWND window, UINT message, W
         return 0;
     }
     if (message == WM_LBUTTONUP && !notification->output.empty()) {
-        const auto x = GET_X_LPARAM(lparam);
-        const auto y = GET_Y_LPARAM(lparam);
+        const POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
         const auto dpi = openreplay::ui::WindowDpi(window);
-        if (y >= openreplay::ui::ScaleForDpi(88, dpi) && x < openreplay::ui::ScaleForDpi(150, dpi)) {
+        const auto scale = [dpi](int value) { return openreplay::ui::ScaleForDpi(value, dpi); };
+        const RECT open_rect{scale(20), scale(92), scale(145), scale(116)};
+        const RECT copy_rect{scale(160), scale(92), scale(300), scale(116)};
+        const RECT share_rect{scale(20), scale(120), scale(175), scale(146)};
+        const RECT webhook_rect{scale(190), scale(120), scale(360), scale(146)};
+        if (notification->shareable && PtInRect(&share_rect, point)) {
+            self->ShareNotificationOutput(*notification, false);
+        } else if (notification->shareable && PtInRect(&webhook_rect, point)) {
+            self->ShareNotificationOutput(*notification, true);
+        } else if (PtInRect(&open_rect, point)) {
             self->OpenNotificationOutput(*notification);
-        } else if (y >= openreplay::ui::ScaleForDpi(88, dpi) && x < openreplay::ui::ScaleForDpi(315, dpi)) {
+        } else if (PtInRect(&copy_rect, point)) {
             self->CopyNotificationOutput(*notification);
         }
         return 0;
@@ -2914,12 +3457,14 @@ LRESULT CALLBACK MainWindow::NotificationWindowProc(HWND window, UINT message, W
 void MainWindow::Root_KeyDown(IInspectable const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args) {
     if (args.Key() == Windows::System::VirtualKey::Escape) {
         if (settings_visible_) ShowSettings(false);
+        else if (gallery_visible_) ShowGallery(false);
         else HideOverlay();
         args.Handled(true);
     }
 }
 
 void MainWindow::SettingsButton_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&) { ShowSettings(true); }
+void MainWindow::GalleryButton_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&) { ShowGallery(true); }
 void MainWindow::CloseButton_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&) { HideOverlay(); }
 void MainWindow::BackButton_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&) { ShowSettings(false); }
 
@@ -3166,6 +3711,11 @@ bool MainWindow::ReadSettingsFromControls(openreplay::Settings& draft, bool show
     draft.start_with_windows = start_with_windows_toggle_.IsOn();
     draft.automatic_updates = automatic_updates_toggle_.IsOn();
     draft.developer_updates = developer_updates_toggle_.IsOn();
+    draft.discord_auto_send = discord_webhook_configured_ && discord_auto_send_toggle_.IsOn();
+    const auto discord_size = discord_size_input_.Value();
+    if (!std::isnan(discord_size)) {
+        draft.discord_target_megabytes = static_cast<std::uint32_t>(std::lround(discord_size));
+    }
     draft.language = LanguageSelector().SelectedIndex() == 0 ? "ru-RU" : "en-US";
     const auto monitor_index = MonitorSelector().SelectedIndex();
     if (monitor_index >= 0 && static_cast<size_t>(monitor_index) < monitor_ids_.size()) {

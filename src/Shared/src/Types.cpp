@@ -57,6 +57,7 @@ void Settings::Normalize() {
     fps = fps >= 60 ? 60u : 30u;
     bitrate_kbps = std::clamp(bitrate_kbps, 2500u, 200000u);
     quality_level = std::clamp(quality_level, 1u, 51u);
+    discord_target_megabytes = std::clamp(discord_target_megabytes, 5u, 500u);
     switch (quality_preset) {
     case QualityPreset::Performance: quality_level = 25; break;
     case QualityPreset::Balanced: quality_level = 22; break;
@@ -262,6 +263,23 @@ std::uint64_t EstimateReplaySizeBytes(const Settings& settings) noexcept {
     const auto payload = (static_cast<std::uint64_t>(settings.bitrate_kbps) + audio_kbps) *
                          settings.replay_seconds * 1000U / 8U;
     return payload + payload / 100U;
+}
+
+std::uint32_t DiscordVideoBitrate(std::chrono::milliseconds duration,
+                                  std::uint32_t target_megabytes,
+                                  std::uint32_t audio_bitrate) noexcept {
+    if (duration.count() <= 0) return 0;
+    constexpr std::uint64_t mebibyte = 1024ULL * 1024ULL;
+    constexpr std::uint64_t container_reserve = 256ULL * 1024ULL;
+    constexpr std::uint64_t minimum_video_bitrate = 250000ULL;
+    constexpr std::uint64_t maximum_video_bitrate = 50000000ULL;
+    const auto target_bytes = static_cast<std::uint64_t>(std::clamp(target_megabytes, 5U, 500U)) * mebibyte;
+    const auto payload_bytes = target_bytes * 94ULL / 100ULL;
+    if (payload_bytes <= container_reserve) return 0;
+    const auto total_bitrate = (payload_bytes - container_reserve) * 8000ULL /
+                               static_cast<std::uint64_t>(duration.count());
+    if (total_bitrate <= static_cast<std::uint64_t>(audio_bitrate) + minimum_video_bitrate) return 0;
+    return static_cast<std::uint32_t>(std::min(total_bitrate - audio_bitrate, maximum_video_bitrate));
 }
 
 }  // namespace openreplay

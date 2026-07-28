@@ -85,11 +85,13 @@ Settings SettingsStore::Load() const {
         if (separator == std::string::npos) continue;
         values.emplace(line.substr(0, separator), line.substr(separator + 1));
     }
+    const auto settings_version = ParseUInt(values, "version", 0);
 
     result.instant_replay_enabled = ParseBool(values, "instant_replay_enabled", result.instant_replay_enabled);
     result.start_with_windows = ParseBool(values, "start_with_windows", result.start_with_windows);
     result.automatic_updates = ParseBool(values, "automatic_updates", result.automatic_updates);
     result.developer_updates = ParseBool(values, "developer_updates", result.developer_updates);
+    result.discord_auto_send = ParseBool(values, "discord_auto_send", result.discord_auto_send);
     result.capture_cursor = ParseBool(values, "capture_cursor", result.capture_cursor);
     result.microphone_enabled = ParseBool(values, "microphone_enabled", result.microphone_enabled);
     result.replay_seconds = ParseUInt(values, "replay_seconds", result.replay_seconds);
@@ -97,6 +99,8 @@ Settings SettingsStore::Load() const {
     result.fps = ParseUInt(values, "fps", result.fps);
     result.bitrate_kbps = ParseUInt(values, "bitrate_kbps", result.bitrate_kbps);
     result.quality_level = ParseUInt(values, "quality_level", result.quality_level);
+    result.discord_target_megabytes = ParseUInt(
+        values, "discord_target_megabytes", result.discord_target_megabytes);
     result.language = ParseString(values, "language", result.language);
     result.monitor_id = ParseString(values, "monitor_id");
     result.desktop_audio_devices = ParseDeviceList(values, "desktop_audio_device", "desktop_audio_device");
@@ -120,6 +124,14 @@ Settings SettingsStore::Load() const {
         values, "recording_hotkey_enabled", result.recording_hotkey_enabled);
     result.recording_hotkey_chord = ParseString(
         values, "recording_hotkey_chord", result.recording_hotkey_chord);
+    if (settings_version <= 10) {
+        for (auto& hotkey : result.replay_hotkeys) {
+            if (hotkey.chord == "Ctrl+F10" && hotkey.replay_seconds == 15) hotkey.chord = "Alt+F10";
+            if (hotkey.chord == "Ctrl+F11" && hotkey.replay_seconds == 30) hotkey.chord = "Alt+F11";
+        }
+        if (result.screenshot_hotkey_chord == "Ctrl+F12") result.screenshot_hotkey_chord = "Alt+F12";
+        if (result.recording_hotkey_chord == "Ctrl+F9") result.recording_hotkey_chord = "Alt+F9";
+    }
     result.encoder = ParseEncoderVendor(ParseString(values, "encoder", "auto"));
     result.codec = ParseVideoCodec(ParseString(values, "codec", "h264"));
     result.quality_preset = ParseQualityPreset(ParseString(values, "quality_preset", "balanced"));
@@ -166,11 +178,12 @@ void SettingsStore::Save(const Settings& input) const {
     {
         std::ofstream output(temporary, std::ios::trunc);
         if (!output) throw std::runtime_error("Unable to open temporary settings file");
-        output << "version=10\n"
+        output << "version=12\n"
                << "instant_replay_enabled=" << (settings.instant_replay_enabled ? "true" : "false") << '\n'
                << "start_with_windows=" << (settings.start_with_windows ? "true" : "false") << '\n'
                << "automatic_updates=" << (settings.automatic_updates ? "true" : "false") << '\n'
                << "developer_updates=" << (settings.developer_updates ? "true" : "false") << '\n'
+               << "discord_auto_send=" << (settings.discord_auto_send ? "true" : "false") << '\n'
                << "capture_cursor=" << (settings.capture_cursor ? "true" : "false") << '\n'
                << "microphone_enabled=" << (settings.microphone_enabled ? "true" : "false") << '\n'
                << "replay_seconds=" << settings.replay_seconds << '\n'
@@ -178,6 +191,7 @@ void SettingsStore::Save(const Settings& input) const {
                << "fps=" << settings.fps << '\n'
                << "bitrate_kbps=" << settings.bitrate_kbps << '\n'
                << "quality_level=" << settings.quality_level << '\n'
+               << "discord_target_megabytes=" << settings.discord_target_megabytes << '\n'
                << "language=" << PercentEncode(settings.language) << '\n'
                << "monitor_id=" << PercentEncode(settings.monitor_id) << '\n'
                << "desktop_audio_device_count=" << settings.desktop_audio_devices.size() << '\n';

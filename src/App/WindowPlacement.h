@@ -7,6 +7,7 @@ namespace openreplay::ui {
 struct MonitorArea {
     HMONITOR monitor{nullptr};
     RECT bounds{};
+    bool desktop{false};
     bool fullscreen{false};
     bool taskbar_visible{false};
 };

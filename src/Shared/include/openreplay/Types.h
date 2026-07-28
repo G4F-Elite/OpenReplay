@@ -37,6 +37,7 @@ struct Settings {
     bool start_with_windows{false};
     bool automatic_updates{true};
     bool developer_updates{false};
+    bool discord_auto_send{false};
     bool capture_cursor{true};
     bool microphone_enabled{true};
     std::uint32_t replay_seconds{60};
@@ -44,18 +45,19 @@ struct Settings {
     std::uint32_t fps{60};
     std::uint32_t bitrate_kbps{24000};
     std::uint32_t quality_level{22};
+    std::uint32_t discord_target_megabytes{8};
     std::string language{"en-US"};
     std::string monitor_id;
     std::vector<AudioDeviceConfig> desktop_audio_devices{{"default", {}, 100}};
     std::vector<AudioDeviceConfig> microphone_devices{{"default", {}, 100}};
     std::vector<ReplayHotkey> replay_hotkeys{
-        {true, "Ctrl+F10", 15},
-        {true, "Ctrl+F11", 30},
+        {true, "Alt+F10", 15},
+        {true, "Alt+F11", 30},
     };
     bool screenshot_hotkey_enabled{true};
-    std::string screenshot_hotkey_chord{"Ctrl+F12"};
+    std::string screenshot_hotkey_chord{"Alt+F12"};
     bool recording_hotkey_enabled{true};
-    std::string recording_hotkey_chord{"Ctrl+F9"};
+    std::string recording_hotkey_chord{"Alt+F9"};
     EncoderVendor encoder{EncoderVendor::Auto};
     VideoCodec codec{VideoCodec::H264};
     QualityPreset quality_preset{QualityPreset::Balanced};
@@ -124,5 +126,8 @@ bool AudioSourceSettingsEqual(const Settings& left, const Settings& right) noexc
 bool CapturePipelineSettingsEqual(const Settings& left, const Settings& right) noexcept;
 bool ReplayOutputSettingsEqual(const Settings& left, const Settings& right);
 std::uint64_t EstimateReplaySizeBytes(const Settings& settings) noexcept;
+std::uint32_t DiscordVideoBitrate(std::chrono::milliseconds duration,
+                                  std::uint32_t target_megabytes,
+                                  std::uint32_t audio_bitrate = 128000) noexcept;
 
 }  // namespace openreplay

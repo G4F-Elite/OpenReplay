@@ -4,6 +4,7 @@
 #include <windowsx.h>
 #include <commctrl.h>
 #include <propsys.h>
+#include <ShlObj_core.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <mmdeviceapi.h>
 #include <propvarutil.h>
@@ -21,9 +22,15 @@
 #include <winrt/Windows.UI.h>
 #include <winrt/Windows.UI.Text.h>
 #include <winrt/Windows.ApplicationModel.Activation.h>
+#include <winrt/Windows.Media.MediaProperties.h>
+#include <winrt/Windows.Media.Editing.h>
+#include <winrt/Windows.Media.Transcoding.h>
+#include <winrt/Windows.Storage.h>
+#include <winrt/Windows.Storage.FileProperties.h>
 #include <winrt/Windows.System.h>
 #include <winrt/Windows.UI.Core.h>
 #include <winrt/Microsoft.UI.Dispatching.h>
+#include <winrt/Microsoft.UI.Windowing.h>
 #include <winrt/Microsoft.UI.Xaml.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
@@ -34,6 +41,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <deque>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -41,5 +49,6 @@
 #include <string>
 #include <string_view>
 #include <span>
+#include <optional>
 #include <unordered_set>
 #include <vector>

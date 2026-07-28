@@ -39,6 +39,8 @@ void SettingsRoundTrip() {
     settings.start_with_windows = true;
     settings.automatic_updates = false;
     settings.developer_updates = true;
+    settings.discord_auto_send = true;
+    settings.discord_target_megabytes = 25;
     settings.language = "ru-RU";
     settings.monitor_id = "display:1=value";
     settings.output_directory = std::filesystem::temp_directory_path() / L"Open Replay";
@@ -66,6 +68,8 @@ void SettingsRoundTrip() {
     Check(loaded.start_with_windows, "start with Windows setting did not round-trip");
     Check(!loaded.automatic_updates, "automatic updates setting did not round-trip");
     Check(loaded.developer_updates, "developer updates setting did not round-trip");
+    Check(loaded.discord_auto_send && loaded.discord_target_megabytes == 25,
+          "Discord share settings did not round-trip");
     Check(loaded.monitor_id == settings.monitor_id, "escaped setting did not round-trip");
     Check(loaded.output_directory == settings.output_directory, "path setting did not round-trip");
     Check(loaded.replay_seconds == 90, "numeric setting did not round-trip");
@@ -96,12 +100,17 @@ void DefaultSettingsUseEnglishAndMp4() {
     openreplay::Settings settings;
     Check(settings.language == "en-US", "English was not the default language");
     Check(settings.output_format == openreplay::OutputFormat::Mp4, "MP4 was not the default output format");
-    Check(settings.screenshot_hotkey_enabled && settings.screenshot_hotkey_chord == "Ctrl+F12",
-           "screenshot hotkey defaults were not applied");
-    Check(settings.recording_hotkey_enabled && settings.recording_hotkey_chord == "Ctrl+F9",
-          "recording hotkey defaults were not applied");
+    Check(settings.screenshot_hotkey_enabled && settings.screenshot_hotkey_chord == "Alt+F12",
+            "screenshot hotkey defaults were not applied");
+    Check(settings.recording_hotkey_enabled && settings.recording_hotkey_chord == "Alt+F9",
+            "recording hotkey defaults were not applied");
+    Check(settings.replay_hotkeys.size() == 2 && settings.replay_hotkeys[0].chord == "Alt+F10" &&
+              settings.replay_hotkeys[1].chord == "Alt+F11",
+          "replay hotkey defaults were not applied");
     Check(settings.automatic_updates, "automatic updates were not enabled by default");
     Check(!settings.developer_updates, "developer updates were enabled by default");
+    Check(!settings.discord_auto_send && settings.discord_target_megabytes == 8,
+          "Discord share defaults were not applied");
 }
 
 void UpdateMetadataParsesAndComparesVersions() {
@@ -236,6 +245,34 @@ void LegacyAudioSettingsMigrate() {
           "legacy desktop audio device was not migrated");
     Check(loaded.microphone_devices == std::vector<openreplay::AudioDeviceConfig>{{"legacy-input", {}, 100}},
           "legacy microphone device was not migrated");
+    std::filesystem::remove(path);
+}
+
+void LegacyDefaultHotkeysMigrateToAlt() {
+    const auto path = std::filesystem::temp_directory_path() / L"OpenReplay.UnitTests.legacy-hotkeys.settings";
+    {
+        std::ofstream output(path);
+        output << "version=10\n"
+               << "replay_hotkey_count=3\n"
+               << "replay_hotkey_0_enabled=true\n"
+               << "replay_hotkey_0_chord=Ctrl%2BF10\n"
+               << "replay_hotkey_0_seconds=15\n"
+               << "replay_hotkey_1_enabled=true\n"
+               << "replay_hotkey_1_chord=Ctrl%2BF11\n"
+               << "replay_hotkey_1_seconds=30\n"
+               << "replay_hotkey_2_enabled=true\n"
+               << "replay_hotkey_2_chord=Ctrl%2BF10\n"
+               << "replay_hotkey_2_seconds=45\n"
+               << "screenshot_hotkey_chord=Ctrl%2BF12\n"
+               << "recording_hotkey_chord=Ctrl%2BF9\n";
+    }
+    const auto loaded = openreplay::SettingsStore{path}.Load();
+    Check(loaded.replay_hotkeys[0].chord == "Alt+F10" && loaded.replay_hotkeys[1].chord == "Alt+F11",
+          "legacy replay hotkey defaults were not migrated");
+    Check(loaded.replay_hotkeys[2].chord == "Ctrl+F10",
+          "custom replay hotkey was changed during migration");
+    Check(loaded.screenshot_hotkey_chord == "Alt+F12" && loaded.recording_hotkey_chord == "Alt+F9",
+          "legacy capture hotkey defaults were not migrated");
     std::filesystem::remove(path);
 }
 
@@ -376,6 +413,18 @@ void ReplaySizeEstimateIncludesEncodedAudioAndOverhead() {
           "replay size estimate did not include all encoded tracks and overhead");
 }
 
+void DiscordBitrateTargetsConfiguredSize() {
+    const auto bitrate = openreplay::DiscordVideoBitrate(std::chrono::seconds{15}, 8);
+    Check(bitrate >= 3900000 && bitrate <= 4100000,
+          "Discord video bitrate did not reserve audio and container overhead");
+    Check(openreplay::DiscordVideoBitrate(std::chrono::milliseconds{0}, 8) == 0,
+          "zero-duration Discord export received a bitrate");
+    openreplay::Settings settings;
+    settings.discord_target_megabytes = 1;
+    settings.Normalize();
+    Check(settings.discord_target_megabytes == 5, "Discord size limit was not clamped");
+}
+
 }  // namespace
 
 int wmain() {
@@ -387,6 +436,7 @@ int wmain() {
         UpdateSignatureFixtureVerifies();
         SettingsChangeClassification();
         LegacyAudioSettingsMigrate();
+        LegacyDefaultHotkeysMigrateToAlt();
         ProtocolRoundTrip();
         ReplayDurationCommandParses();
         AudioDevicesNormalize();
@@ -397,6 +447,7 @@ int wmain() {
         PerformanceOverlaySettingsNormalize();
         QualityPresetsApplyEncoderLevels();
         ReplaySizeEstimateIncludesEncodedAudioAndOverhead();
+        DiscordBitrateTargetsConfiguredSize();
         std::cout << "OpenReplay unit tests passed\n";
         return 0;
     } catch (const std::exception& error) {

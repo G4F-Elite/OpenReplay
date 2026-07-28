@@ -8,8 +8,19 @@
 namespace openreplay::ui {
 namespace {
 
+bool IsDesktopWindow(HWND window) noexcept {
+    if (!window) return false;
+    const auto root = GetAncestor(window, GA_ROOT);
+    if (window == GetShellWindow() || root == GetShellWindow()) return true;
+
+    wchar_t class_name[32]{};
+    const auto candidate = root ? root : window;
+    if (!GetClassNameW(candidate, class_name, static_cast<int>(std::size(class_name)))) return false;
+    return std::wcscmp(class_name, L"Progman") == 0 || std::wcscmp(class_name, L"WorkerW") == 0;
+}
+
 bool CoversMonitor(HWND window, const RECT& monitor_bounds) noexcept {
-    if (!window || window == GetShellWindow() || !IsWindowVisible(window) || IsIconic(window)) return false;
+    if (!window || IsDesktopWindow(window) || !IsWindowVisible(window) || IsIconic(window)) return false;
     const auto root = GetAncestor(window, GA_ROOT);
     RECT bounds{};
     if (!GetWindowRect(root ? root : window, &bounds)) return false;
@@ -81,6 +92,7 @@ MonitorArea ForegroundMonitorArea(HWND fallback_window) noexcept {
 
     MonitorArea result;
     result.monitor = monitor;
+    result.desktop = IsDesktopWindow(foreground);
     result.fullscreen = CoversMonitor(foreground, info.rcMonitor);
     TaskbarSearch taskbar{monitor, info.rcMonitor};
     EnumWindows(FindVisibleTaskbar, reinterpret_cast<LPARAM>(&taskbar));

@@ -60,6 +60,8 @@ public:
         std::wstring_view label) const;
     [[nodiscard]] winrt::Microsoft::UI::Xaml::Controls::TextBox HotkeyInput(
         std::wstring_view placeholder = {}) const;
+    [[nodiscard]] winrt::Microsoft::UI::Xaml::Controls::PasswordBox SecretInput(
+        std::wstring_view placeholder = {}) const;
     [[nodiscard]] winrt::Microsoft::UI::Xaml::Controls::NumberBox NumberInput(
         double minimum, double maximum, double step) const;
     [[nodiscard]] SliderControl RangeSlider(

@@ -65,7 +65,7 @@
       <AdditionalOptions>%(AdditionalOptions) /bigobj</AdditionalOptions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>advapi32.lib;bcrypt.lib;comctl32.lib;dxgi.lib;gdi32.lib;ole32.lib;shell32.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>advapi32.lib;bcrypt.lib;comctl32.lib;dxgi.lib;gdi32.lib;ole32.lib;shell32.lib;winhttp.lib;windowsapp.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
@@ -88,6 +88,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
+    <ClInclude Include="DiscordShareService.h" />
     <ClInclude Include="PerformanceOverlay.h" />
     <ClInclude Include="StartupTrace.h" />
     <ClInclude Include="UiControls.h" />
@@ -98,6 +99,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp"><PrecompiledHeader>Create</PrecompiledHeader></ClCompile>
+    <ClCompile Include="DiscordShareService.cpp" />
     <ClCompile Include="PerformanceOverlay.cpp" />
     <ClCompile Include="StartupTrace.cpp" />
     <ClCompile Include="UiControls.cpp" />

@@ -4,6 +4,7 @@
 #include "pch.h"
 
 #include "PerformanceOverlay.h"
+#include "ClipLibraryWindow.xaml.h"
 #include "DiscordShareService.h"
 #include "UpdateService.h"
 
@@ -114,9 +115,7 @@ private:
     void HideOverlay();
     void ToggleOverlay();
     void ShowSettings(bool show);
-    void ShowGallery(bool show);
-    void RefreshGallery();
-    void OpenGalleryClip(const std::filesystem::path& path);
+    void ShowClipLibrary();
     void LoadSettingsIntoControls();
     void EnumerateMonitors();
     void EnumerateAudioDevices();
@@ -252,7 +251,6 @@ private:
     bool recording_hotkey_registered_{false};
     bool visible_{false};
     bool settings_visible_{false};
-    bool gallery_visible_{false};
     bool updating_ui_{false};
     bool english_{true};
     bool exiting_{false};
@@ -313,11 +311,11 @@ private:
     std::vector<bool> replay_hotkey_registered_;
     std::vector<openreplay::ReplayHotkey> replay_hotkey_draft_;
     std::deque<std::filesystem::path> pending_discord_uploads_;
+    winrt::com_ptr<ClipLibraryWindow> clip_library_window_owner_;
 
     Microsoft::UI::Xaml::Controls::Grid root_{nullptr};
     Microsoft::UI::Xaml::Controls::Grid dashboard_panel_{nullptr};
     Microsoft::UI::Xaml::Controls::Grid settings_panel_{nullptr};
-    Microsoft::UI::Xaml::Controls::Grid gallery_panel_{nullptr};
     Microsoft::UI::Xaml::Controls::Button settings_button_{nullptr};
     Microsoft::UI::Xaml::Controls::Button gallery_button_{nullptr};
     Microsoft::UI::Xaml::Controls::Button back_button_{nullptr};
@@ -337,9 +335,6 @@ private:
     Microsoft::UI::Xaml::Controls::TextBlock screenshot_state_text_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock settings_title_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock settings_subtitle_{nullptr};
-    Microsoft::UI::Xaml::Controls::TextBlock gallery_title_{nullptr};
-    Microsoft::UI::Xaml::Controls::TextBlock gallery_subtitle_{nullptr};
-    Microsoft::UI::Xaml::Controls::TextBlock gallery_empty_text_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock source_section_title_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock video_section_title_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock input_section_title_{nullptr};
@@ -451,9 +446,6 @@ private:
     Microsoft::UI::Xaml::Controls::Button save_replay_button_{nullptr};
     Microsoft::UI::Xaml::Controls::Button recording_button_{nullptr};
     Microsoft::UI::Xaml::Controls::Button screenshot_button_{nullptr};
-    Microsoft::UI::Xaml::Controls::Button gallery_back_button_{nullptr};
-    Microsoft::UI::Xaml::Controls::Button gallery_refresh_button_{nullptr};
-    Microsoft::UI::Xaml::Controls::StackPanel gallery_list_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock settings_save_status_{nullptr};
     Microsoft::UI::Xaml::Media::Brush accent_brush_{nullptr};
     Microsoft::UI::Xaml::Media::Brush success_brush_{nullptr};

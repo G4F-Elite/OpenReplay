@@ -19,10 +19,13 @@
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Foundation.Numerics.h>
+#include <winrt/Windows.Graphics.h>
 #include <winrt/Windows.UI.h>
 #include <winrt/Windows.UI.Text.h>
 #include <winrt/Windows.ApplicationModel.Activation.h>
 #include <winrt/Windows.Media.MediaProperties.h>
+#include <winrt/Windows.Media.Core.h>
+#include <winrt/Windows.Media.Playback.h>
 #include <winrt/Windows.Media.Editing.h>
 #include <winrt/Windows.Media.Transcoding.h>
 #include <winrt/Windows.Storage.h>
@@ -36,6 +39,7 @@
 #include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
 #include <winrt/Microsoft.UI.Xaml.Input.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
+#include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
 
 #include <chrono>
 #include <array>
@@ -45,6 +49,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>

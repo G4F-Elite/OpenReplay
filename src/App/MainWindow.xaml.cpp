@@ -215,19 +215,6 @@ bool HostProcessRunning() noexcept {
     return true;
 }
 
-bool IsGalleryClip(const std::filesystem::directory_entry& entry) {
-    std::error_code error;
-    if (!entry.is_regular_file(error)) return false;
-    const auto extension = entry.path().extension().wstring();
-    return extension == L".mkv" || extension == L".mp4";
-}
-
-std::wstring GallerySizeText(std::uintmax_t bytes) {
-    const auto mebibytes = static_cast<double>(bytes) / (1024.0 * 1024.0);
-    if (mebibytes < 1.0) return std::to_wstring(bytes / 1024U) + L" KiB";
-    return std::to_wstring(static_cast<unsigned int>(std::lround(mebibytes))) + L" MiB";
-}
-
 }  // namespace
 
 namespace winrt::OpenReplay::implementation {
@@ -264,6 +251,7 @@ MainWindow::MainWindow() {
 }
 
 MainWindow::~MainWindow() {
+    if (clip_library_window_owner_) clip_library_window_owner_->Shutdown();
     if (status_timer_) status_timer_.Stop();
     if (settings_apply_timer_) settings_apply_timer_.Stop();
     RemoveTrayIcon();
@@ -1142,52 +1130,6 @@ void MainWindow::BuildUi() {
     settings_panel_.Children().Append(save_status_surface);
     layout.Children().Append(settings_panel_);
 
-    gallery_panel_ = Grid{};
-    gallery_panel_.Padding(Thickness{20, 18, 20, 16});
-    gallery_panel_.Visibility(Visibility::Collapsed);
-    AddRow(gallery_panel_, 0, GridUnitType::Auto);
-    AddRow(gallery_panel_, 1, GridUnitType::Star);
-    AddRow(gallery_panel_, 0, GridUnitType::Auto);
-    Grid::SetRow(gallery_panel_, 2);
-
-    Grid gallery_header;
-    AddColumn(gallery_header, 1, GridUnitType::Star);
-    AddColumn(gallery_header, 0, GridUnitType::Auto);
-    StackPanel gallery_heading;
-    gallery_title_ = Text(L"Clips", 27, primary_text_brush);
-    gallery_title_.FontWeight(Windows::UI::Text::FontWeights::Bold());
-    gallery_subtitle_ = Text(L"Existing recordings and replays", 12.5, secondary_text_brush_);
-    gallery_subtitle_.Margin(Thickness{0, 5, 0, 0});
-    gallery_subtitle_.TextWrapping(TextWrapping::Wrap);
-    gallery_heading.Children().Append(gallery_title_);
-    gallery_heading.Children().Append(gallery_subtitle_);
-    gallery_header.Children().Append(gallery_heading);
-    gallery_refresh_button_ = controls.ActionButton(L"Refresh");
-    gallery_refresh_button_.Click([this](auto&&, auto&&) { RefreshGallery(); });
-    Grid::SetColumn(gallery_refresh_button_, 1);
-    gallery_header.Children().Append(gallery_refresh_button_);
-    gallery_panel_.Children().Append(gallery_header);
-
-    ScrollViewer gallery_scroll;
-    gallery_scroll.Margin(Thickness{0, 18, 0, 12});
-    gallery_scroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
-    gallery_scroll.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
-    Grid::SetRow(gallery_scroll, 1);
-    gallery_list_ = StackPanel{};
-    gallery_list_.Spacing(10);
-    gallery_empty_text_ = Text(L"No clips found", 13, secondary_text_brush_);
-    gallery_empty_text_.TextWrapping(TextWrapping::Wrap);
-    gallery_empty_text_.Margin(Thickness{0, 10, 0, 0});
-    gallery_list_.Children().Append(gallery_empty_text_);
-    gallery_scroll.Content(gallery_list_);
-    gallery_panel_.Children().Append(gallery_scroll);
-
-    gallery_back_button_ = controls.ActionButton(L"Back");
-    gallery_back_button_.Click([this](auto&&, auto&&) { ShowGallery(false); });
-    Grid::SetRow(gallery_back_button_, 2);
-    gallery_panel_.Children().Append(gallery_back_button_);
-    layout.Children().Append(gallery_panel_);
-
     Grid footer;
     footer.Padding(Thickness{20, 0, 20, 0});
     footer.Background(panel_brush);
@@ -1709,10 +1651,8 @@ void MainWindow::ShowSettings(bool show) {
         ApplySettingsFromControls(false);
     }
     settings_visible_ = show;
-    gallery_visible_ = false;
     DashboardPanel().Visibility(show ? Visibility::Collapsed : Visibility::Visible);
     SettingsPanel().Visibility(show ? Visibility::Visible : Visibility::Collapsed);
-    gallery_panel_.Visibility(Visibility::Collapsed);
     if (show) {
         LoadSettingsIntoControls();
         MonitorSelector().Focus(FocusState::Programmatic);
@@ -1721,109 +1661,24 @@ void MainWindow::ShowSettings(bool show) {
     }
 }
 
-void MainWindow::ShowGallery(bool show) {
-    if (show && settings_apply_pending_) {
-        settings_apply_timer_.Stop();
-        ApplySettingsFromControls(false);
-    }
-    settings_visible_ = false;
-    gallery_visible_ = show;
-    DashboardPanel().Visibility(show ? Visibility::Collapsed : Visibility::Visible);
-    SettingsPanel().Visibility(Visibility::Collapsed);
-    gallery_panel_.Visibility(show ? Visibility::Visible : Visibility::Collapsed);
-    if (show) {
-        RefreshGallery();
-        gallery_refresh_button_.Focus(FocusState::Programmatic);
+void MainWindow::ShowClipLibrary() {
+    if (!clip_library_window_owner_) {
+        clip_library_window_owner_ = winrt::make_self<ClipLibraryWindow>();
+        const auto weak = get_weak();
+        clip_library_window_owner_->Configure(
+            settings_.output_directory, english_, discord_webhook_configured_,
+            [weak](std::filesystem::path path, bool webhook) {
+                if (const auto self = weak.get()) self->ShareReplay(path, webhook);
+            });
     } else {
-        SettingsButton().Focus(FocusState::Programmatic);
+        clip_library_window_owner_->Configure(settings_.output_directory, english_, discord_webhook_configured_,
+                                               [weak = get_weak()](std::filesystem::path path, bool webhook) {
+                                                   if (const auto self = weak.get()) {
+                                                       self->ShareReplay(path, webhook);
+                                                   }
+                                               });
     }
-}
-
-void MainWindow::RefreshGallery() {
-    if (!gallery_list_) return;
-    using namespace Microsoft::UI::Xaml;
-    using namespace Microsoft::UI::Xaml::Controls;
-
-    while (gallery_list_.Children().Size() > 1) gallery_list_.Children().RemoveAtEnd();
-    std::vector<std::filesystem::path> clips;
-    std::error_code error;
-    if (std::filesystem::exists(settings_.output_directory, error)) {
-        for (const std::filesystem::directory_entry entry : std::filesystem::directory_iterator(
-                 settings_.output_directory, std::filesystem::directory_options::skip_permission_denied, error)) {
-            if (!error && IsGalleryClip(entry)) clips.push_back(entry.path());
-            error.clear();
-        }
-    }
-    std::ranges::sort(clips, [](const auto& left, const auto& right) {
-        std::error_code left_error;
-        std::error_code right_error;
-        const auto left_time = std::filesystem::last_write_time(left, left_error);
-        const auto right_time = std::filesystem::last_write_time(right, right_error);
-        if (left_error || right_error) return left.filename().wstring() > right.filename().wstring();
-        return left_time > right_time;
-    });
-    gallery_empty_text_.Visibility(clips.empty() ? Visibility::Visible : Visibility::Collapsed);
-    gallery_empty_text_.Text(clips.empty()
-        ? (english_ ? L"No MKV or MP4 clips found in the output folder"
-                    : L"В папке сохранения нет клипов MKV или MP4")
-        : L"");
-    if (clips.empty()) return;
-
-    const auto theme = DarkTheme();
-    const ControlFactory controls{theme};
-    for (const auto& path : clips) {
-        Border card;
-        card.Background(theme.card);
-        card.BorderBrush(theme.border);
-        card.BorderThickness(Thickness{1, 1, 1, 1});
-        card.CornerRadius(CornerRadius{8, 8, 8, 8});
-        card.Padding(Thickness{14, 12, 14, 12});
-
-        StackPanel content;
-        Grid header;
-        AddColumn(header, 1, GridUnitType::Star);
-        AddColumn(header, 0, GridUnitType::Auto);
-        auto title = Text(path.filename().wstring(), 14, theme.primary_text);
-        title.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-        title.TextTrimming(TextTrimming::CharacterEllipsis);
-        title.TextWrapping(TextWrapping::NoWrap);
-        header.Children().Append(title);
-        std::error_code size_error;
-        const auto size = std::filesystem::file_size(path, size_error);
-        auto details = Text(size_error ? L"Video" : GallerySizeText(size), 11.5, theme.secondary_text);
-        details.Margin(Thickness{12, 0, 0, 0});
-        Grid::SetColumn(details, 1);
-        header.Children().Append(details);
-        content.Children().Append(header);
-
-        Grid actions;
-        AddColumn(actions, 1, GridUnitType::Star);
-        AddColumn(actions, 1, GridUnitType::Star);
-        AddColumn(actions, 1, GridUnitType::Star);
-        actions.Margin(Thickness{0, 10, 0, 0});
-        auto open = controls.ActionButton(english_ ? L"Open" : L"Открыть");
-        open.Margin(Thickness{0, 0, 4, 0});
-        open.Click([this, path](auto&&, auto&&) { OpenGalleryClip(path); });
-        actions.Children().Append(open);
-        auto discord_copy = controls.ActionButton(english_ ? L"Discord copy" : L"Копия Discord");
-        discord_copy.Margin(Thickness{4, 0, 4, 0});
-        discord_copy.Click([this, path](auto&&, auto&&) { ShareReplay(path, false); });
-        Grid::SetColumn(discord_copy, 1);
-        actions.Children().Append(discord_copy);
-        auto webhook = controls.ActionButton(english_ ? L"Send webhook" : L"Webhook");
-        webhook.Margin(Thickness{4, 0, 0, 0});
-        webhook.IsEnabled(discord_webhook_configured_);
-        webhook.Click([this, path](auto&&, auto&&) { ShareReplay(path, true); });
-        Grid::SetColumn(webhook, 2);
-        actions.Children().Append(webhook);
-        content.Children().Append(actions);
-        card.Child(content);
-        gallery_list_.Children().Append(card);
-    }
-}
-
-void MainWindow::OpenGalleryClip(const std::filesystem::path& path) {
-    ShellExecuteW(GetWindowHandle(), L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    clip_library_window_owner_->ActivateWindow();
 }
 
 void MainWindow::LoadSettingsIntoControls() {
@@ -2129,9 +1984,6 @@ void MainWindow::ApplyLanguage() {
     set(SettingsTitle(), english_ ? L"Settings" : L"Настройки");
     set(SettingsSubtitle(), english_ ? L"Changes save automatically"
                                         : L"Изменения сохраняются автоматически");
-    set(gallery_title_, english_ ? L"Clips" : L"Клипы");
-    set(gallery_subtitle_, english_ ? L"Existing recordings and replays"
-                                    : L"Существующие записи и повторы");
     set(source_section_title_, english_ ? L"SOURCE" : L"ИСТОЧНИК");
     set(video_section_title_, english_ ? L"VIDEO" : L"ВИДЕО");
     set(input_section_title_, english_ ? L"INTERFACE AND INPUT" : L"ИНТЕРФЕЙС И ВВОД");
@@ -2225,8 +2077,6 @@ void MainWindow::ApplyLanguage() {
     }
     back_button_.Content(winrt::box_value(english_ ? L"← Back" : L"← Назад"));
     gallery_button_.Content(winrt::box_value(english_ ? L"Clips" : L"Клипы"));
-    gallery_refresh_button_.Content(winrt::box_value(english_ ? L"Refresh" : L"Обновить"));
-    gallery_back_button_.Content(winrt::box_value(english_ ? L"Back" : L"Назад"));
     open_folder_button_.Content(winrt::box_value(english_ ? L"Recordings" : L"Записи"));
     open_logs_button_.Content(winrt::box_value(english_ ? L"Logs" : L"Логи"));
     discord_save_button_.Content(winrt::box_value(english_ ? L"Save webhook" : L"Сохранить webhook"));
@@ -2236,7 +2086,6 @@ void MainWindow::ApplyLanguage() {
     release_notes_button_.Content(winrt::box_value(english_ ? L"Release notes" : L"Что нового"));
     RecordingButton().Content(winrt::box_value(recording_ ? (english_ ? L"Stop recording" : L"Остановить запись")
                                                           : (english_ ? L"Start recording" : L"Начать запись")));
-    if (gallery_visible_) RefreshGallery();
 
     const auto quality_items = QualitySelector().Items();
     quality_items.GetAt(0).as<ComboBoxItem>().Content(winrt::box_value(english_ ? L"Performance" : L"Производительность"));
@@ -2848,7 +2697,6 @@ void MainWindow::ApplyReplaySaveStatus(const openreplay::Response& response) {
               NotificationChannel::ReplaySave, true);
     openreplay::ui::TraceStartup(L"Replay saved: " + path.wstring());
     if (settings_.discord_auto_send && discord_webhook_configured_) ShareReplay(path, true);
-    if (gallery_visible_) RefreshGallery();
 }
 
 void MainWindow::ShareReplay(const std::filesystem::path& source, bool webhook) {
@@ -3457,14 +3305,15 @@ LRESULT CALLBACK MainWindow::NotificationWindowProc(HWND window, UINT message, W
 void MainWindow::Root_KeyDown(IInspectable const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args) {
     if (args.Key() == Windows::System::VirtualKey::Escape) {
         if (settings_visible_) ShowSettings(false);
-        else if (gallery_visible_) ShowGallery(false);
         else HideOverlay();
         args.Handled(true);
     }
 }
 
 void MainWindow::SettingsButton_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&) { ShowSettings(true); }
-void MainWindow::GalleryButton_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&) { ShowGallery(true); }
+void MainWindow::GalleryButton_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    ShowClipLibrary();
+}
 void MainWindow::CloseButton_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&) { HideOverlay(); }
 void MainWindow::BackButton_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&) { ShowSettings(false); }
 

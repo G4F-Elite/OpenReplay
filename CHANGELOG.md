@@ -17,6 +17,7 @@ Notable user-facing changes are documented here. Development builds use the
 - Added an opt-in developer update channel backed by signed rolling release metadata.
 - Changed the default recording, replay, and screenshot shortcuts from `Ctrl+F9...F12` to `Alt+F9...F12`.
 - Added Discord sharing with H.264/AAC export, dynamic bitrate and size verification, file copy, secure webhook uploads with embeds, and optional automatic sending after replay saves.
+- Added a separate clip library window using shared controls, video thumbnails, a non-overlapping player viewport, file metadata, and Discord actions.
 
 ### Fixed
 

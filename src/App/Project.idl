@@ -5,4 +5,10 @@ namespace OpenReplay
     {
         MainWindow();
     }
+
+    [default_interface]
+    runtimeclass ClipLibraryWindow : Microsoft.UI.Xaml.Window
+    {
+        ClipLibraryWindow();
+    }
 }

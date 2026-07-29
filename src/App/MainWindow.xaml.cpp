@@ -1024,17 +1024,15 @@ void MainWindow::BuildUi() {
     discord_auto_send_row.Children().Append(discord_auto_send_toggle_);
     discord_section.Children().Append(discord_auto_send_row);
 
-    Grid discord_actions;
-    AddColumn(discord_actions, 1, GridUnitType::Star);
-    AddColumn(discord_actions, 1, GridUnitType::Star);
+    StackPanel discord_actions;
+    discord_actions.Orientation(Orientation::Horizontal);
+    discord_actions.Spacing(8);
+    discord_actions.HorizontalAlignment(HorizontalAlignment::Right);
     discord_save_button_ = controls.ActionButton(L"Save webhook", ButtonKind::Accent);
-    discord_save_button_.Margin(Thickness{0, 0, 6, 0});
     discord_save_button_.Click({this, &MainWindow::SaveDiscordWebhook_Click});
     discord_actions.Children().Append(discord_save_button_);
     discord_test_button_ = controls.ActionButton(L"Test");
-    discord_test_button_.Margin(Thickness{6, 0, 0, 0});
     discord_test_button_.Click({this, &MainWindow::TestDiscordWebhook_Click});
-    Grid::SetColumn(discord_test_button_, 1);
     discord_actions.Children().Append(discord_test_button_);
     discord_section.Children().Append(discord_actions);
     discord_clear_button_ = controls.ActionButton(L"Remove webhook");
@@ -1633,11 +1631,36 @@ void MainWindow::ShowOverlay() {
 }
 
 void MainWindow::HideOverlay() {
+    if (clip_library_window_owner_) clip_library_window_owner_->HideWindow();
     if (!visible_) return;
     if (!AnimateWindow(GetWindowHandle(), 130, AW_HIDE | AW_SLIDE | AW_HOR_NEGATIVE)) {
         ShowWindow(GetWindowHandle(), SW_HIDE);
     }
     visible_ = false;
+}
+
+void MainWindow::SetClipFullscreen(bool fullscreen) {
+    if (fullscreen) {
+        clip_fullscreen_hid_overlay_ = visible_;
+        clip_fullscreen_hid_performance_ = performance_overlay_.Visible();
+        if (visible_) {
+            ShowWindow(GetWindowHandle(), SW_HIDE);
+            visible_ = false;
+        }
+        if (clip_fullscreen_hid_performance_) performance_overlay_.Toggle(settings_, english_);
+        return;
+    }
+
+    if (clip_fullscreen_hid_performance_ && !performance_overlay_.Visible()) {
+        performance_overlay_.Toggle(settings_, english_);
+    }
+    if (clip_fullscreen_hid_overlay_ && !visible_ && PositionOverlayWindow()) {
+        ShowWindow(GetWindowHandle(), SW_SHOWNOACTIVATE);
+        visible_ = true;
+        PollStatus();
+    }
+    clip_fullscreen_hid_overlay_ = false;
+    clip_fullscreen_hid_performance_ = false;
 }
 
 void MainWindow::ToggleOverlay() {
@@ -1666,15 +1689,24 @@ void MainWindow::ShowClipLibrary() {
         clip_library_window_owner_ = winrt::make_self<ClipLibraryWindow>();
         const auto weak = get_weak();
         clip_library_window_owner_->Configure(
-            settings_.output_directory, english_, discord_webhook_configured_,
+            settings_.output_directory, english_, discord_webhook_configured_, GetWindowHandle(),
             [weak](std::filesystem::path path, bool webhook) {
                 if (const auto self = weak.get()) self->ShareReplay(path, webhook);
+            },
+            [weak](bool fullscreen) {
+                if (const auto self = weak.get()) self->SetClipFullscreen(fullscreen);
             });
     } else {
         clip_library_window_owner_->Configure(settings_.output_directory, english_, discord_webhook_configured_,
+                                               GetWindowHandle(),
                                                [weak = get_weak()](std::filesystem::path path, bool webhook) {
                                                    if (const auto self = weak.get()) {
                                                        self->ShareReplay(path, webhook);
+                                                   }
+                                               },
+                                               [weak = get_weak()](bool fullscreen) {
+                                                   if (const auto self = weak.get()) {
+                                                       self->SetClipFullscreen(fullscreen);
                                                    }
                                                });
     }

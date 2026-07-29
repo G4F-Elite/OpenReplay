@@ -113,6 +113,7 @@ private:
     bool PositionOverlayWindow();
     void ShowOverlay();
     void HideOverlay();
+    void SetClipFullscreen(bool fullscreen);
     void ToggleOverlay();
     void ShowSettings(bool show);
     void ShowClipLibrary();
@@ -452,6 +453,8 @@ private:
     Microsoft::UI::Xaml::Media::Brush secondary_text_brush_{nullptr};
     Microsoft::UI::Xaml::Media::Brush danger_brush_{nullptr};
     std::vector<std::unique_ptr<DesktopNotification>> notifications_;
+    bool clip_fullscreen_hid_overlay_{false};
+    bool clip_fullscreen_hid_performance_{false};
     bool notification_class_registered_{false};
     bool private_font_loaded_{false};
 };

@@ -54,6 +54,9 @@ public:
 
     [[nodiscard]] winrt::Microsoft::UI::Xaml::Controls::Button ActionButton(
         std::wstring_view label, ButtonKind kind = ButtonKind::Quiet) const;
+    [[nodiscard]] winrt::Microsoft::UI::Xaml::Controls::Button IconButton(
+        std::wstring_view glyph, std::wstring_view tooltip,
+        ButtonKind kind = ButtonKind::Quiet) const;
     [[nodiscard]] winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch Toggle() const;
     [[nodiscard]] winrt::Microsoft::UI::Xaml::Controls::ComboBox Select() const;
     [[nodiscard]] winrt::Microsoft::UI::Xaml::Controls::ComboBoxItem Option(

@@ -122,6 +122,20 @@ Button ControlFactory::ActionButton(std::wstring_view label, ButtonKind kind) co
     return button;
 }
 
+Button ControlFactory::IconButton(std::wstring_view glyph, std::wstring_view tooltip, ButtonKind kind) const {
+    auto button = ActionButton(L"", kind);
+    button.Width(42);
+    button.Height(42);
+    button.MinWidth(42);
+    button.Padding(Thickness{0, 0, 0, 0});
+    FontIcon icon;
+    icon.Glyph(winrt::hstring{glyph});
+    icon.FontSize(15);
+    button.Content(icon);
+    ToolTipService::SetToolTip(button, winrt::box_value(winrt::hstring{tooltip}));
+    return button;
+}
+
 ToggleSwitch ControlFactory::Toggle() const {
     ToggleSwitch toggle;
     toggle.FontFamily(PublicSans());

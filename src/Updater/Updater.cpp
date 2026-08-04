@@ -32,6 +32,21 @@ struct Arguments {
     std::uint64_t expected_size{};
 };
 
+struct ScopedHandle {
+    HANDLE value{INVALID_HANDLE_VALUE};
+    ~ScopedHandle() { Reset(); }
+    ScopedHandle() = default;
+    explicit ScopedHandle(HANDLE handle) : value(handle) {}
+    ScopedHandle(const ScopedHandle&) = delete;
+    ScopedHandle& operator=(const ScopedHandle&) = delete;
+
+    explicit operator bool() const noexcept { return value && value != INVALID_HANDLE_VALUE; }
+    void Reset(HANDLE handle = INVALID_HANDLE_VALUE) noexcept {
+        if (*this) CloseHandle(value);
+        value = handle;
+    }
+};
+
 std::filesystem::path LocalAppData() {
     std::array<wchar_t, 32768> buffer{};
     const auto length = GetEnvironmentVariableW(L"LOCALAPPDATA", buffer.data(), static_cast<DWORD>(buffer.size()));
@@ -132,6 +147,13 @@ std::wstring HashFile(const std::filesystem::path& path) {
         result.push_back(digits[byte & 0x0F]);
     }
     return result;
+}
+
+bool ArchiveMatches(const Arguments& update) {
+    std::error_code error;
+    return std::filesystem::is_regular_file(update.archive, error) && !error &&
+           std::filesystem::file_size(update.archive, error) == update.expected_size && !error &&
+           HashFile(update.archive) == update.expected_hash;
 }
 
 std::wstring Quote(const std::filesystem::path& value) {
@@ -306,10 +328,15 @@ bool LaunchApp(const std::filesystem::path& target, std::wstring_view arguments,
                           target.c_str(), &startup, &process) != FALSE;
 }
 
-bool WaitForHealth(const std::filesystem::path& health, HANDLE process) {
+bool WaitForHealth(const std::filesystem::path& health, std::wstring_view expected_version, HANDLE process) {
     const auto deadline = std::chrono::steady_clock::now() + 60s;
     while (std::chrono::steady_clock::now() < deadline) {
-        if (std::filesystem::exists(health)) return true;
+        std::wifstream input(health);
+        if (input) {
+            std::wstring actual;
+            std::getline(input, actual);
+            if (actual == expected_version) return true;
+        }
         if (WaitForSingleObject(process, 250) == WAIT_OBJECT_0) return false;
     }
     return false;
@@ -326,10 +353,10 @@ int Run(HINSTANCE) {
     const auto& update = *arguments;
     Log(L"Starting update to " + update.version);
 
+    ScopedHandle archive_lock{CreateFileW(update.archive.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                          OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr)};
     std::error_code error;
-    if (!std::filesystem::is_regular_file(update.archive, error) ||
-        std::filesystem::file_size(update.archive, error) != update.expected_size ||
-        HashFile(update.archive) != update.expected_hash) {
+    if (!archive_lock || !ArchiveMatches(update)) {
         Log(L"Update archive verification failed");
         if (const auto app = OpenProcess(SYNCHRONIZE, FALSE, update.app_pid)) {
             if (WaitForSingleObject(app, 30000) == WAIT_OBJECT_0) {
@@ -368,8 +395,8 @@ int Run(HINSTANCE) {
     std::filesystem::remove_all(backup, error);
     std::filesystem::remove_all(failed, error);
     std::filesystem::create_directories(staging, error);
-    if (error || !ValidateArchiveEntries(update.archive, list_path) ||
-        !ExtractArchive(update.archive, staging) || !ValidateExtractedTree(staging) ||
+    if (error || !ValidateArchiveEntries(update.archive, list_path) || !ArchiveMatches(update) ||
+        !ExtractArchive(update.archive, staging) || !ValidateExtractedTree(staging) || !ArchiveMatches(update) ||
         !std::filesystem::is_regular_file(staging / L"OpenReplay.App.exe") ||
         !std::filesystem::is_regular_file(staging / L"OpenReplay.Host.exe") ||
         !std::filesystem::is_regular_file(staging / L"OpenReplay.Updater.exe") ||
@@ -378,8 +405,15 @@ int Run(HINSTANCE) {
         std::filesystem::remove_all(staging, error);
         return 5;
     }
+    archive_lock.Reset();
 
+    error.clear();
     std::filesystem::remove(update.health, error);
+    if (error) {
+        Log(L"Unable to clear the previous update health check");
+        std::filesystem::remove_all(staging, error);
+        return 5;
+    }
     std::filesystem::rename(update.target, backup, error);
     if (error) {
         Log(L"Unable to move the current installation to backup");
@@ -396,7 +430,8 @@ int Run(HINSTANCE) {
     PROCESS_INFORMATION process{};
     const auto launch_arguments = L"--background --post-update=" + update.version +
                                   L" --update-health=" + Quote(update.health);
-    if (LaunchApp(update.target, launch_arguments, process) && WaitForHealth(update.health, process.hProcess)) {
+    if (LaunchApp(update.target, launch_arguments, process) &&
+        WaitForHealth(update.health, update.version, process.hProcess)) {
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
         std::filesystem::remove_all(backup, error);
@@ -414,12 +449,21 @@ int Run(HINSTANCE) {
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
     }
-    WaitForHostExit(update.target, 5s);
-    std::filesystem::rename(update.target, failed, error);
+    if (!WaitForHostExit(update.target, 5s)) {
+        Log(L"Rollback could not stop the updated Capture Host; backup was retained at " + backup.wstring());
+        return 8;
+    }
     error.clear();
+    std::filesystem::rename(update.target, failed, error);
+    if (error) {
+        Log(L"Rollback could not move the failed installation; backup was retained at " + backup.wstring());
+        return 8;
+    }
     std::filesystem::rename(backup, update.target, error);
     if (error) {
         Log(L"Rollback failed; backup was retained at " + backup.wstring());
+        std::error_code restore_error;
+        std::filesystem::rename(failed, update.target, restore_error);
         return 8;
     }
     PROCESS_INFORMATION restored{};

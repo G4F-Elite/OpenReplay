@@ -1669,6 +1669,7 @@ void MainWindow::ToggleOverlay() {
 }
 
 void MainWindow::ShowSettings(bool show) {
+    if (show == settings_visible_) return;
     if (!show && settings_apply_pending_) {
         settings_apply_timer_.Stop();
         ApplySettingsFromControls(false);
@@ -1750,6 +1751,7 @@ void MainWindow::LoadSettingsIntoControls() {
     performance_gpu_memory_.IsChecked(settings_.performance_show_gpu_memory);
     performance_cpu_usage_.IsChecked(settings_.performance_show_cpu_usage);
     performance_memory_.IsChecked(settings_.performance_show_memory);
+    ReplayToggle().IsOn(settings_.instant_replay_enabled);
     MicrophoneToggle().IsOn(settings_.microphone_enabled);
     CursorToggle().IsOn(settings_.capture_cursor);
     start_with_windows_toggle_.IsOn(settings_.start_with_windows);
@@ -2346,9 +2348,10 @@ winrt::fire_and_forget MainWindow::CheckForUpdatesAsync(bool manual, bool automa
     UpdateUpdateUi();
     const auto dispatcher = DispatcherQueue();
     const auto weak = get_weak();
+    const auto update_service = update_service_;
     const bool developer_channel = developer_updates_toggle_.IsOn();
     co_await winrt::resume_background();
-    auto result = update_service_.Check(developer_channel);
+    auto result = update_service.Check(developer_channel);
     dispatcher.TryEnqueue([weak, result = std::move(result), manual, automatic_download,
                            developer_channel]() mutable {
         if (const auto self = weak.get()) {
@@ -2403,9 +2406,10 @@ winrt::fire_and_forget MainWindow::DownloadUpdateAsync() {
     const auto dispatcher = DispatcherQueue();
     const auto weak = get_weak();
     const auto manifest = available_update_;
+    const auto update_service = update_service_;
     const bool developer_channel = manifest.channel == "dev";
     co_await winrt::resume_background();
-    auto result = update_service_.Download(manifest, developer_channel);
+    auto result = update_service.Download(manifest, developer_channel);
     dispatcher.TryEnqueue([weak, result = std::move(result)]() mutable {
         if (const auto self = weak.get()) self->CompleteUpdateDownload(std::move(result));
     });
@@ -3731,7 +3735,7 @@ void MainWindow::QueueHostSettingsApply(bool audio_device_restored) {
 }
 
 void MainWindow::StartPendingHostSettingsApply() {
-    if (!settings_reload_requested_ || settings_reload_in_flight_) return;
+    if (exiting_ || !settings_reload_requested_ || settings_reload_in_flight_) return;
     if (recording_) {
         UpdateSettingsSaveStatus(english_ ? L"Saved · capture changes apply after recording"
                                            : L"Сохранено · захват обновится после записи");
@@ -3935,7 +3939,18 @@ void MainWindow::ShowTrayMenu() {
 }
 
 void MainWindow::ExitApplication() {
+    if (exiting_) return;
     exiting_ = true;
+    if (settings_apply_pending_) {
+        settings_apply_timer_.Stop();
+        ApplySettingsFromControls(false);
+    }
+    if (status_timer_) status_timer_.Stop();
+    if (settings_apply_timer_) settings_apply_timer_.Stop();
+    if (clip_library_window_owner_) {
+        clip_library_window_owner_->Shutdown();
+        clip_library_window_owner_ = nullptr;
+    }
     const auto response = pipe_client_.Request("shutdown", std::chrono::milliseconds{200});
     (void)response;
     RemoveTrayIcon();

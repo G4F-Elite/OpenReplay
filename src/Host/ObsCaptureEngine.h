@@ -93,7 +93,7 @@ private:
     std::string active_encoder_;
     bool obs_started_{false};
     ScreenshotService screenshot_service_;
-    std::mutex replay_save_mutex_;
+    mutable std::mutex replay_save_mutex_;
     ReplaySaveStatus replay_save_status_;
     std::chrono::steady_clock::time_point replay_save_started_{};
     std::uint32_t replay_save_seconds_{};

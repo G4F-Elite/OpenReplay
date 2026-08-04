@@ -351,7 +351,7 @@ int Run(DWORD parent_id) {
 
     PSECURITY_DESCRIPTOR descriptor = nullptr;
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)", SDDL_REVISION_1, &descriptor, nullptr)) return 3;
+            L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)", SDDL_REVISION_1, &descriptor, nullptr)) return 3;
     SECURITY_ATTRIBUTES security{sizeof(security), descriptor, FALSE};
     FrameCapture capture;
     bool shutdown = false;

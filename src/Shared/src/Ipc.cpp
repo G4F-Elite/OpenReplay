@@ -36,6 +36,26 @@ bool OverlappedSucceeded(BOOL immediate, HANDLE pipe, OVERLAPPED& operation,
     return GetLastError() == ERROR_IO_PENDING && CompleteOverlapped(pipe, operation, deadline, transferred);
 }
 
+bool CompleteWhileRunning(HANDLE pipe, OVERLAPPED& operation, const std::atomic_bool& stopping,
+                          DWORD& transferred) noexcept {
+    while (!stopping) {
+        const auto wait = WaitForSingleObject(operation.hEvent, 50);
+        if (wait == WAIT_OBJECT_0) return GetOverlappedResult(pipe, &operation, &transferred, FALSE) != FALSE;
+        if (wait == WAIT_FAILED) break;
+    }
+    CancelIoEx(pipe, &operation);
+    WaitForSingleObject(operation.hEvent, INFINITE);
+    return false;
+}
+
+bool StartOverlappedConnect(HANDLE pipe, OVERLAPPED& operation, const std::atomic_bool& stopping) noexcept {
+    if (ConnectNamedPipe(pipe, &operation)) return true;
+    const auto error = GetLastError();
+    if (error == ERROR_PIPE_CONNECTED) return true;
+    DWORD transferred = 0;
+    return error == ERROR_IO_PENDING && CompleteWhileRunning(pipe, operation, stopping, transferred);
+}
+
 }  // namespace
 
 Command ParseCommand(std::string_view value) {
@@ -165,7 +185,6 @@ void PipeServer::Stop() {
     stopping_ = true;
     if (worker_.joinable()) {
         while (worker_running_) {
-            CancelSynchronousIo(worker_.native_handle());
             const auto wake_response = PipeClient{}.Request("status", std::chrono::milliseconds{20});
             (void)wake_response;
             if (worker_running_) std::this_thread::sleep_for(std::chrono::milliseconds{10});
@@ -177,21 +196,40 @@ void PipeServer::Stop() {
 void PipeServer::Run() {
     worker_running_ = true;
     while (!stopping_) {
-        HANDLE pipe = CreateNamedPipeW(kPipeName, PIPE_ACCESS_DUPLEX,
+        HANDLE pipe = CreateNamedPipeW(kPipeName, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
                                        PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
                                        1, 8192, 1024, 0, nullptr);
         if (pipe == INVALID_HANDLE_VALUE) break;
 
-        const bool connected = ConnectNamedPipe(pipe, nullptr) != FALSE || GetLastError() == ERROR_PIPE_CONNECTED;
+        OVERLAPPED connect_operation{};
+        connect_operation.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        const bool connected = connect_operation.hEvent && StartOverlappedConnect(pipe, connect_operation, stopping_);
+        if (connect_operation.hEvent) CloseHandle(connect_operation.hEvent);
         if (connected) {
             std::array<char, 1024> request{};
+            OVERLAPPED read_operation{};
+            read_operation.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
             DWORD read = 0;
-            if (ReadFile(pipe, request.data(), static_cast<DWORD>(request.size() - 1), &read, nullptr)) {
+            const auto read_now = read_operation.hEvent
+                ? ReadFile(pipe, request.data(), static_cast<DWORD>(request.size() - 1), &read, &read_operation)
+                : FALSE;
+            if (read_operation.hEvent && OverlappedSucceeded(
+                    read_now, pipe, read_operation, std::chrono::steady_clock::now() + std::chrono::seconds{1}, read)) {
                 const auto response = SerializeResponse(handler_(ParseCommand(std::string_view{request.data(), read})));
+                OVERLAPPED write_operation{};
+                write_operation.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
                 DWORD written = 0;
-                WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()), &written, nullptr);
-                FlushFileBuffers(pipe);
+                const auto write_now = write_operation.hEvent
+                    ? WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()), &written, &write_operation)
+                    : FALSE;
+                if (write_operation.hEvent) {
+                    static_cast<void>(OverlappedSucceeded(
+                        write_now, pipe, write_operation,
+                        std::chrono::steady_clock::now() + std::chrono::seconds{1}, written));
+                    CloseHandle(write_operation.hEvent);
+                }
             }
+            if (read_operation.hEvent) CloseHandle(read_operation.hEvent);
             DisconnectNamedPipe(pipe);
         }
         CloseHandle(pipe);

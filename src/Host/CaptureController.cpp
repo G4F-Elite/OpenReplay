@@ -67,6 +67,7 @@ Response CaptureController::Handle(const Command& command) {
                 return ErrorResponse(std::move(error));
             }
             if (!engine_.StartReplay(error)) {
+                pipeline_ready_ = false;
                 ScheduleRecovery(error);
                 return ErrorResponse(std::move(error));
             }
@@ -234,6 +235,7 @@ void CaptureController::RecoveryLoop() {
 
             const auto replay_save = engine_.ReplaySaveState();
             if (pipeline_ready_ && !engine_.Healthy()) {
+                if (engine_.RecordingActive() || replay_save.in_progress) continue;
                 pipeline_ready_ = false;
                 recording_started_ = {};
                 auto error = replay_save.error;

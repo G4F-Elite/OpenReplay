@@ -44,7 +44,7 @@ bool IsClip(const std::filesystem::directory_entry& entry) {
     std::error_code error;
     if (!entry.is_regular_file(error)) return false;
     const auto extension = entry.path().extension().wstring();
-    return extension == L".mkv" || extension == L".mp4";
+    return _wcsicmp(extension.c_str(), L".mkv") == 0 || _wcsicmp(extension.c_str(), L".mp4") == 0;
 }
 
 std::wstring SizeText(std::uintmax_t bytes) {
@@ -59,6 +59,40 @@ std::wstring DurationText(std::chrono::milliseconds duration) {
         return std::format(L"{:02}:{:02}:{:02}", seconds / 3600, seconds / 60 % 60, seconds % 60);
     }
     return std::format(L"{:02}:{:02}", seconds / 60, seconds % 60);
+}
+
+std::wstring QualityText(std::uint32_t width, std::uint32_t height, std::uint64_t bitrate) {
+    std::wstring result;
+    if (width && height) result = std::format(L"{}x{}", width, height);
+    if (bitrate) {
+        const auto bitrate_text = bitrate >= 1000000
+            ? std::format(L"{:.1f} Mbps", static_cast<double>(bitrate) / 1000000.0)
+            : std::format(L"{} Kbps", bitrate / 1000);
+        if (!result.empty()) result += L"  ·  ";
+        result += bitrate_text;
+    }
+    return result;
+}
+
+void MoveToRecycleBin(const std::filesystem::path& path) {
+    winrt::com_ptr<IFileOperation> operation;
+    winrt::check_hresult(CoCreateInstance(
+        CLSID_FileOperation, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(operation.put())));
+
+    constexpr DWORD flags = FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI |
+                            FOFX_EARLYFAILURE | FOFX_RECYCLEONDELETE | FOFX_ADDUNDORECORD;
+    winrt::check_hresult(operation->SetOperationFlags(flags));
+
+    winrt::com_ptr<IShellItem> item;
+    winrt::check_hresult(SHCreateItemFromParsingName(path.c_str(), nullptr, IID_PPV_ARGS(item.put())));
+    winrt::check_hresult(operation->DeleteItem(item.get(), nullptr));
+
+    const auto operation_result = operation->PerformOperations();
+    BOOL aborted = FALSE;
+    const auto aborted_result = operation->GetAnyOperationsAborted(&aborted);
+    winrt::check_hresult(operation_result);
+    winrt::check_hresult(aborted_result);
+    if (aborted) winrt::throw_hresult(HRESULT_FROM_WIN32(ERROR_CANCELLED));
 }
 
 }  // namespace
@@ -87,6 +121,9 @@ ClipLibraryWindow::ClipLibraryWindow() {
     playback_timer_ = DispatcherQueue().CreateTimer();
     playback_timer_.Interval(std::chrono::milliseconds{200});
     playback_timer_.Tick([this](auto&&, auto&&) { UpdatePlaybackUi(); });
+    playback_feedback_timer_ = DispatcherQueue().CreateTimer();
+    playback_feedback_timer_.Interval(std::chrono::milliseconds{16});
+    playback_feedback_timer_.Tick([this](auto&&, auto&&) { UpdatePlaybackFeedback(); });
 }
 
 void ClipLibraryWindow::Configure(std::filesystem::path output_directory, bool english, bool webhook_available,
@@ -116,6 +153,8 @@ void ClipLibraryWindow::HideWindow() {
         ToggleFullscreen();
     }
     if (playback_timer_) playback_timer_.Stop();
+    if (playback_feedback_timer_) playback_feedback_timer_.Stop();
+    if (playback_feedback_) playback_feedback_.Opacity(0);
     if (media_player_) media_player_.Pause();
     const Microsoft::UI::Xaml::Window window = *this;
     window.AppWindow().Hide();
@@ -124,6 +163,7 @@ void ClipLibraryWindow::HideWindow() {
 void ClipLibraryWindow::Shutdown() {
     closing_for_exit_ = true;
     if (playback_timer_) playback_timer_.Stop();
+    if (playback_feedback_timer_) playback_feedback_timer_.Stop();
     if (player_ && player_.MediaPlayer()) player_.MediaPlayer().Pause();
     Close();
 }
@@ -297,6 +337,7 @@ void ClipLibraryWindow::BuildUi() {
     player_surface_.BorderThickness(Thickness{1, 1, 1, 1});
     player_surface_.CornerRadius(CornerRadius{10, 10, 10, 10});
     player_surface_.Padding(Thickness{1, 1, 1, 1});
+    Grid video_viewport;
     player_ = MediaPlayerElement{};
     media_player_ = Windows::Media::Playback::MediaPlayer{};
     media_player_.AutoPlay(false);
@@ -306,8 +347,30 @@ void ClipLibraryWindow::BuildUi() {
     player_.Stretch(Stretch::Uniform);
     player_.HorizontalAlignment(HorizontalAlignment::Stretch);
     player_.VerticalAlignment(VerticalAlignment::Stretch);
-    player_.PointerPressed([this](auto&&, auto&&) { TogglePlayback(); });
-    player_surface_.Child(player_);
+    player_.PointerPressed([this](auto&&, auto const& args) {
+        TogglePlayback();
+        args.Handled(true);
+    });
+    video_viewport.Children().Append(player_);
+
+    playback_feedback_ = Border{};
+    playback_feedback_.Width(76);
+    playback_feedback_.Height(76);
+    playback_feedback_.Background(Brush(0xB81B1718));
+    playback_feedback_.CornerRadius(CornerRadius{38, 38, 38, 38});
+    playback_feedback_.HorizontalAlignment(HorizontalAlignment::Center);
+    playback_feedback_.VerticalAlignment(VerticalAlignment::Center);
+    playback_feedback_.IsHitTestVisible(false);
+    playback_feedback_.Opacity(0);
+    playback_feedback_.CenterPoint(Windows::Foundation::Numerics::float3{38.0f, 38.0f, 0.0f});
+    playback_feedback_.Scale(Windows::Foundation::Numerics::float3{0.82f, 0.82f, 1.0f});
+    playback_feedback_icon_ = FontIcon{};
+    playback_feedback_icon_.Glyph(L"\xE768");
+    playback_feedback_icon_.FontSize(30);
+    playback_feedback_icon_.Foreground(theme.primary_text);
+    playback_feedback_.Child(playback_feedback_icon_);
+    video_viewport.Children().Append(playback_feedback_);
+    player_surface_.Child(video_viewport);
     Grid::SetRow(player_surface_, 0);
     player_column_.Children().Append(player_surface_);
 
@@ -440,6 +503,11 @@ void ClipLibraryWindow::BuildUi() {
     open_button_.IsEnabled(false);
     open_button_.Click([this](auto&&, auto&&) { OpenSelectedClip(); });
     actions_.Children().Append(open_button_);
+    delete_button_ = controls.ActionButton(L"Delete");
+    delete_button_.Foreground(theme.danger);
+    delete_button_.IsEnabled(false);
+    delete_button_.Click([this](auto&&, auto&&) { DeleteSelectedClipAsync(); });
+    actions_.Children().Append(delete_button_);
     discord_copy_button_ = controls.ActionButton(L"Discord copy");
     discord_copy_button_.IsEnabled(false);
     discord_copy_button_.Click([this](auto&&, auto&&) { ShareSelectedClip(false); });
@@ -471,6 +539,7 @@ void ClipLibraryWindow::ApplyLanguage() {
     winrt::Microsoft::UI::Xaml::Controls::ToolTipService::SetToolTip(
         speed_selector_, winrt::box_value(english_ ? L"Playback speed" : L"Скорость воспроизведения"));
     open_button_.Content(winrt::box_value(english_ ? L"Open" : L"Открыть"));
+    delete_button_.Content(winrt::box_value(english_ ? L"Delete" : L"Удалить"));
     discord_copy_button_.Content(winrt::box_value(english_ ? L"Discord copy" : L"Копия Discord"));
     webhook_button_.Content(winrt::box_value(english_ ? L"Send webhook" : L"Webhook"));
     if (selected_clip_.empty()) selected_title_.Text(english_ ? L"Select a clip" : L"Выберите клип");
@@ -478,6 +547,7 @@ void ClipLibraryWindow::ApplyLanguage() {
 
 void ClipLibraryWindow::RefreshClips() {
     if (!clip_list_) return;
+    const auto generation = ++clip_list_generation_;
     while (clip_list_.Children().Size() > 1) clip_list_.Children().RemoveAtEnd();
     clip_cards_.clear();
 
@@ -495,8 +565,12 @@ void ClipLibraryWindow::RefreshClips() {
         std::error_code right_error;
         const auto left_time = std::filesystem::last_write_time(left, left_error);
         const auto right_time = std::filesystem::last_write_time(right, right_error);
-        return left_error || right_error ? left.filename() > right.filename() : left_time > right_time;
+        if (left_error != right_error) return !left_error;
+        return left_error ? left.filename() > right.filename() : left_time > right_time;
     });
+    if (!selected_clip_.empty() && std::ranges::find(clips, selected_clip_) == clips.end()) {
+        ResetSelection();
+    }
 
     empty_text_.Visibility(clips.empty() ? Visibility::Visible : Visibility::Collapsed);
     if (clips.empty()) {
@@ -555,17 +629,41 @@ void ClipLibraryWindow::RefreshClips() {
         std::error_code size_error;
         const auto size = std::filesystem::file_size(path, size_error);
         auto metadata = Text(size_error ? L"Video" : SizeText(size), 11, theme.secondary_text);
-        metadata.Margin(Thickness{0, 5, 0, 0});
+        metadata.Margin(Thickness{0, 4, 0, 0});
         details.Children().Append(metadata);
+        auto quality = Text(L"", 10.5, theme.secondary_text);
+        quality.Margin(Thickness{0, 2, 0, 0});
+        details.Children().Append(quality);
         Grid::SetColumn(details, 1);
         card_grid.Children().Append(details);
         card.Child(card_grid);
         card.PointerPressed([this, path](auto&&, auto&&) { SelectClip(path); });
         clip_list_.Children().Append(card);
         clip_cards_.emplace_back(path, card);
-        LoadClipVisualsAsync(path, thumbnail, metadata);
+        LoadClipVisualsAsync(path, thumbnail, metadata, quality, generation);
     }
     UpdateSelectionStyles();
+}
+
+void ClipLibraryWindow::ResetSelection() {
+    ++source_generation_;
+    selected_clip_.clear();
+    if (media_player_) {
+        media_player_.Pause();
+        media_player_.Source(nullptr);
+    }
+    player_source_ = nullptr;
+    open_button_.IsEnabled(false);
+    delete_button_.IsEnabled(false);
+    discord_copy_button_.IsEnabled(false);
+    webhook_button_.IsEnabled(false);
+    selected_title_.Text(english_ ? L"Select a clip" : L"Выберите клип");
+    selected_metadata_.Text(L"");
+    timeline_.Value(0);
+    playback_time_.Text(L"00:00 / 00:00");
+    play_icon_.Glyph(L"\xE768");
+    if (playback_feedback_timer_) playback_feedback_timer_.Stop();
+    if (playback_feedback_) playback_feedback_.Opacity(0);
 }
 
 void ClipLibraryWindow::UpdateSelectionStyles() {
@@ -579,8 +677,11 @@ void ClipLibraryWindow::UpdateSelectionStyles() {
 }
 
 void ClipLibraryWindow::SelectClip(const std::filesystem::path& path) {
+    if (path == selected_clip_ && player_source_) return;
+    ++source_generation_;
     selected_clip_ = path;
     open_button_.IsEnabled(true);
+    delete_button_.IsEnabled(true);
     discord_copy_button_.IsEnabled(true);
     webhook_button_.IsEnabled(webhook_available_ && share_callback_ != nullptr);
     selected_title_.Text(path.filename().wstring());
@@ -591,9 +692,9 @@ void ClipLibraryWindow::SelectClip(const std::filesystem::path& path) {
 
 winrt::fire_and_forget ClipLibraryWindow::OpenClipAsync(std::filesystem::path path) {
     const auto weak = get_weak();
+    const auto generation = source_generation_;
     try {
         const auto file = co_await winrt::Windows::Storage::StorageFile::GetFileFromPathAsync(path.wstring());
-        const auto source = winrt::Windows::Media::Core::MediaSource::CreateFromStorageFile(file);
         std::wstring details;
         try {
             const auto video = co_await file.Properties().GetVideoPropertiesAsync();
@@ -603,7 +704,8 @@ winrt::fire_and_forget ClipLibraryWindow::OpenClipAsync(std::filesystem::path pa
         } catch (...) {
         }
         if (const auto self = weak.get()) {
-            if (self->selected_clip_ != path) co_return;
+            if (self->selected_clip_ != path || self->source_generation_ != generation) co_return;
+            const auto source = winrt::Windows::Media::Core::MediaSource::CreateFromStorageFile(file);
             self->player_source_ = source;
             self->media_player_.Source(source);
             constexpr std::array<double, 7> rates{0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0};
@@ -622,7 +724,7 @@ winrt::fire_and_forget ClipLibraryWindow::OpenClipAsync(std::filesystem::path pa
         }
     } catch (...) {
         if (const auto self = weak.get()) {
-            if (self->selected_clip_ == path) {
+            if (self->selected_clip_ == path && self->source_generation_ == generation) {
                 self->selected_metadata_.Text(self->english_ ? L"Unable to open this clip"
                                                               : L"Не удалось открыть этот клип");
             }
@@ -637,10 +739,43 @@ void ClipLibraryWindow::TogglePlayback() {
     if (playing) {
         media_player_.Pause();
     } else {
+        const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(session.NaturalDuration());
+        const auto position = std::chrono::duration_cast<std::chrono::milliseconds>(session.Position());
+        if (duration.count() > 0 && position + std::chrono::milliseconds{100} >= duration) {
+            session.Position(Windows::Foundation::TimeSpan{});
+        }
         media_player_.Play();
     }
     play_icon_.Glyph(playing ? L"\xE768" : L"\xE769");
+    ShowPlaybackFeedback(!playing);
     UpdatePlaybackUi();
+}
+
+void ClipLibraryWindow::ShowPlaybackFeedback(bool playing) {
+    if (!playback_feedback_ || !playback_feedback_icon_ || !playback_feedback_timer_) return;
+    playback_feedback_icon_.Glyph(playing ? L"\xE768" : L"\xE769");
+    playback_feedback_.Opacity(1);
+    playback_feedback_.Scale(Windows::Foundation::Numerics::float3{0.82f, 0.82f, 1.0f});
+    playback_feedback_started_ = std::chrono::steady_clock::now();
+    playback_feedback_timer_.Start();
+}
+
+void ClipLibraryWindow::UpdatePlaybackFeedback() {
+    if (!playback_feedback_ || !playback_feedback_timer_) return;
+    constexpr auto duration = std::chrono::milliseconds{420};
+    const auto elapsed = std::chrono::steady_clock::now() - playback_feedback_started_;
+    const auto progress = std::clamp(
+        static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()) /
+            duration.count(),
+        0.0, 1.0);
+    const auto eased = 1.0 - std::pow(1.0 - progress, 3.0);
+    const auto scale = static_cast<float>(0.82 + 0.18 * eased);
+    playback_feedback_.Scale(Windows::Foundation::Numerics::float3{scale, scale, 1.0f});
+    playback_feedback_.Opacity(progress < 0.2 ? 1.0 : std::max(0.0, (1.0 - progress) / 0.8));
+    if (progress >= 1.0) {
+        playback_feedback_.Opacity(0);
+        playback_feedback_timer_.Stop();
+    }
 }
 
 void ClipLibraryWindow::UpdatePlaybackUi() {
@@ -665,7 +800,7 @@ void ClipLibraryWindow::UpdatePlaybackUi() {
 }
 
 void ClipLibraryWindow::ToggleFullscreen() {
-    if (!player_ || !player_source_) return;
+    if (!player_ || (!fullscreen_ && !player_source_)) return;
     const Microsoft::UI::Xaml::Window window = *this;
     HWND handle{};
     if (FAILED(window.as<::IWindowNative>()->get_WindowHandle(&handle))) return;
@@ -696,30 +831,95 @@ void ClipLibraryWindow::OpenSelectedClip() {
     ShellExecuteW(nullptr, L"open", selected_clip_.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
+winrt::fire_and_forget ClipLibraryWindow::DeleteSelectedClipAsync() {
+    const auto path = selected_clip_;
+    if (path.empty() || delete_in_progress_) co_return;
+    delete_in_progress_ = true;
+    delete_button_.IsEnabled(false);
+    const auto weak = get_weak();
+    try {
+        Microsoft::UI::Xaml::Controls::ContentDialog confirmation;
+        confirmation.XamlRoot(root_.XamlRoot());
+        confirmation.Title(winrt::box_value(english_ ? L"Delete clip?" : L"Удалить клип?"));
+        confirmation.Content(winrt::box_value(path.filename().wstring()));
+        confirmation.PrimaryButtonText(english_ ? L"Move to Recycle Bin" : L"Переместить в Корзину");
+        confirmation.CloseButtonText(english_ ? L"Cancel" : L"Отмена");
+        confirmation.DefaultButton(Microsoft::UI::Xaml::Controls::ContentDialogButton::Close);
+        const auto result = co_await confirmation.ShowAsync();
+
+        const auto self = weak.get();
+        if (!self) co_return;
+        if (result != Microsoft::UI::Xaml::Controls::ContentDialogResult::Primary ||
+            self->selected_clip_ != path) {
+            self->delete_in_progress_ = false;
+            self->delete_button_.IsEnabled(!self->selected_clip_.empty());
+            co_return;
+        }
+
+        ++self->source_generation_;
+        ++self->clip_list_generation_;
+        self->media_player_.Pause();
+        self->media_player_.Source(nullptr);
+        self->player_source_ = nullptr;
+        MoveToRecycleBin(path);
+        self->delete_in_progress_ = false;
+        if (self->selected_clip_ == path) {
+            self->ResetSelection();
+        }
+        self->RefreshClips();
+    } catch (...) {
+        if (const auto self = weak.get()) {
+            self->delete_in_progress_ = false;
+            self->delete_button_.IsEnabled(!self->selected_clip_.empty());
+            if (self->selected_clip_ == path) {
+                self->selected_metadata_.Text(self->english_ ? L"Unable to move this clip to the Recycle Bin"
+                                                              : L"Не удалось переместить клип в Корзину");
+            }
+        }
+    }
+}
+
 void ClipLibraryWindow::ShareSelectedClip(bool webhook) {
     if (selected_clip_.empty() || !share_callback_) return;
     share_callback_(selected_clip_, webhook);
 }
 
 winrt::fire_and_forget ClipLibraryWindow::LoadClipVisualsAsync(
-    std::filesystem::path path, Image image, TextBlock metadata) {
+    std::filesystem::path path, Image image, TextBlock metadata, TextBlock quality,
+    std::uint64_t generation) {
     const auto weak = get_weak();
     try {
         const auto file = co_await winrt::Windows::Storage::StorageFile::GetFileFromPathAsync(path.wstring());
+        if (const auto self = weak.get(); !self || self->clip_list_generation_ != generation) co_return;
         const auto thumbnail = co_await file.GetThumbnailAsync(
             winrt::Windows::Storage::FileProperties::ThumbnailMode::VideosView, 320,
             winrt::Windows::Storage::FileProperties::ThumbnailOptions::UseCurrentScale);
         winrt::Microsoft::UI::Xaml::Media::Imaging::BitmapImage bitmap;
         co_await bitmap.SetSourceAsync(thumbnail);
+        thumbnail.Close();
+        if (const auto self = weak.get(); !self || self->clip_list_generation_ != generation) co_return;
         const auto video = co_await file.Properties().GetVideoPropertiesAsync();
-        const auto details = SizeText((co_await file.GetBasicPropertiesAsync()).Size()) + L"  ·  " +
-                             DurationText(std::chrono::duration_cast<std::chrono::milliseconds>(video.Duration()));
+        const auto basic = co_await file.GetBasicPropertiesAsync();
+        const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(video.Duration());
+        const auto details = SizeText(basic.Size()) + L"  ·  " + DurationText(duration);
+        auto bitrate = static_cast<std::uint64_t>(video.Bitrate());
+        if (!bitrate && duration.count() > 0) {
+            bitrate = static_cast<std::uint64_t>(
+                static_cast<long double>(basic.Size()) * 8000.0L / duration.count());
+        }
+        const auto quality_text = QualityText(video.Width(), video.Height(), bitrate);
         if (const auto self = weak.get()) {
+            if (self->clip_list_generation_ != generation) co_return;
             image.Source(bitmap);
             metadata.Text(details);
+            quality.Text(quality_text);
         }
     } catch (...) {
-        if (const auto self = weak.get()) metadata.Text(self->english_ ? L"Video" : L"Видео");
+        if (const auto self = weak.get()) {
+            if (self->clip_list_generation_ != generation) co_return;
+            metadata.Text(self->english_ ? L"Video" : L"Видео");
+            quality.Text(L"");
+        }
     }
 }
 

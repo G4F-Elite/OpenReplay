@@ -37,8 +37,8 @@ using ObsData = std::unique_ptr<obs_data_t, ObsDataReleaser>;
 std::wstring Timestamp() {
     SYSTEMTIME local{};
     GetLocalTime(&local);
-    return std::format(L"{:04}-{:02}-{:02}_{:02}-{:02}-{:02}", local.wYear, local.wMonth,
-                       local.wDay, local.wHour, local.wMinute, local.wSecond);
+    return std::format(L"{:04}-{:02}-{:02}_{:02}-{:02}-{:02}-{:03}", local.wYear, local.wMonth,
+                       local.wDay, local.wHour, local.wMinute, local.wSecond, local.wMilliseconds);
 }
 
 BOOL CALLBACK CollectMonitor(HMONITOR monitor, HDC, LPRECT, LPARAM parameter) {
@@ -114,6 +114,7 @@ bool ObsCaptureEngine::Initialize(const Settings& settings, std::string& error) 
     const auto config = ToUtf8(SettingsStore::DefaultPath().parent_path().wstring());
     if (!api_.obs_startup("en-US", config.c_str(), nullptr)) {
         error = "libobs initialization failed";
+        api_.Unload();
         return false;
     }
     obs_started_ = true;
@@ -373,7 +374,12 @@ bool ObsCaptureEngine::CreateEncoders(std::string& error) {
 }
 
 bool ObsCaptureEngine::Healthy() const noexcept {
-    if (api_.device_lost() || replay_mux_failed_) return false;
+    if (api_.device_lost()) return false;
+    {
+        std::scoped_lock lock{replay_save_mutex_};
+        if (replay_save_status_.in_progress) return true;
+    }
+    if (replay_mux_failed_) return false;
     if (!ReplayActive()) return true;
 
     const auto frames = api_.obs_output_get_total_frames(replay_outputs_.front()->output);

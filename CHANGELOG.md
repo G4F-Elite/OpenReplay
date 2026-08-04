@@ -13,6 +13,7 @@ Notable user-facing changes are documented here. Development builds use the
 
 ### Added
 
+- Added clip deletion, resolution and bitrate details, and animated play/pause feedback to the clip library.
 - Added compositor-delivered FPS, 1% low, 0.1% low, frametime, GPU power, and configurable graph metrics to the performance overlay.
 - Added an opt-in developer update channel backed by signed rolling release metadata.
 - Changed the default recording, replay, and screenshot shortcuts from `Ctrl+F9...F12` to `Alt+F9...F12`.
@@ -21,6 +22,11 @@ Notable user-facing changes are documented here. Development builds use the
 
 ### Fixed
 
+- Prevented capture recovery from interrupting active recordings or replay saves, and made rapid recording restarts use unique filenames.
+- Closed hidden clip windows and pending timers during exit, preserved settings edits, and initialized the replay toggle immediately.
+- Hardened update archive verification, version-specific health checks, and rollback after a failed update.
+- Prevented silent named-pipe clients from blocking capture commands and restricted telemetry control to the current user.
+- Fixed clip-library selection races, stale files after refresh, uppercase extensions, fullscreen exit, and replay after reaching the end.
 - Fixed automatic updates getting stuck when the capture Host could not stop gracefully.
 - Kept the clip library lifecycle tied to the overlay, replaced its native title row with shared window controls, and aligned Discord and media actions consistently.
 - Opened the sidebar immediately on normal executable launch and removed the startup window flash in background mode.

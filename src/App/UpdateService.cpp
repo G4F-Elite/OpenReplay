@@ -23,6 +23,16 @@ struct InternetHandle {
     InternetHandle& operator=(const InternetHandle&) = delete;
 };
 
+struct KernelHandle {
+    HANDLE value{INVALID_HANDLE_VALUE};
+    ~KernelHandle() { if (value != INVALID_HANDLE_VALUE) CloseHandle(value); }
+    KernelHandle() = default;
+    explicit KernelHandle(HANDLE handle) : value(handle) {}
+    KernelHandle(const KernelHandle&) = delete;
+    KernelHandle& operator=(const KernelHandle&) = delete;
+    explicit operator bool() const noexcept { return value != INVALID_HANDLE_VALUE; }
+};
+
 std::wstring SystemMessage(DWORD error) {
     wchar_t* raw = nullptr;
     const auto length = FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
@@ -152,6 +162,68 @@ std::wstring Quote(const std::filesystem::path& value) {
     return L'"' + value.wstring() + L'"';
 }
 
+bool RunProcess(const std::filesystem::path& executable, std::wstring arguments,
+                DWORD timeout, std::wstring& error) {
+    std::wstring command = Quote(executable) + L" " + std::move(arguments);
+    STARTUPINFOW startup{sizeof(startup)};
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                        nullptr, executable.parent_path().c_str(), &startup, &process)) {
+        error = SystemMessage(GetLastError());
+        return false;
+    }
+    CloseHandle(process.hThread);
+    const auto wait = WaitForSingleObject(process.hProcess, timeout);
+    DWORD exit_code = 1;
+    if (wait == WAIT_OBJECT_0) {
+        GetExitCodeProcess(process.hProcess, &exit_code);
+    } else {
+        TerminateProcess(process.hProcess, 1);
+        WaitForSingleObject(process.hProcess, 5000);
+    }
+    CloseHandle(process.hProcess);
+    if (wait == WAIT_OBJECT_0 && exit_code == 0) return true;
+    error = wait == WAIT_TIMEOUT ? L"Updater extraction timed out" : L"Unable to extract the updater";
+    return false;
+}
+
+bool ExtractUpdater(const UpdateManifest& manifest, const std::filesystem::path& archive,
+                    const std::filesystem::path& directory, std::filesystem::path& helper,
+                    std::wstring& error) {
+    KernelHandle archive_lock{CreateFileW(archive.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                          OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr)};
+    if (!archive_lock) {
+        error = SystemMessage(GetLastError());
+        return false;
+    }
+
+    std::error_code file_error;
+    if (!std::filesystem::is_regular_file(archive, file_error) || file_error ||
+        std::filesystem::file_size(archive, file_error) != manifest.asset_size || file_error ||
+        _wcsicmp(FileHash(archive).c_str(), openreplay::FromUtf8(manifest.asset_sha256).c_str()) != 0) {
+        error = L"Update archive verification failed before updater extraction";
+        return false;
+    }
+
+    std::array<wchar_t, 32768> windows{};
+    const auto length = GetWindowsDirectoryW(windows.data(), static_cast<UINT>(windows.size()));
+    if (!length || length >= windows.size()) {
+        error = SystemMessage(GetLastError());
+        return false;
+    }
+    const auto tar = std::filesystem::path{std::wstring{windows.data(), length}} / L"System32" / L"tar.exe";
+    if (!RunProcess(tar, L"-xf " + Quote(archive) + L" -C " + Quote(directory) +
+                              L" OpenReplay.Updater.exe", 60000, error)) {
+        return false;
+    }
+    helper = directory / L"OpenReplay.Updater.exe";
+    if (!std::filesystem::is_regular_file(helper, file_error) || file_error) {
+        error = L"The update archive does not contain OpenReplay.Updater.exe";
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 std::filesystem::path UpdateService::UpdateRoot() {
@@ -259,22 +331,18 @@ UpdateDownloadResult UpdateService::Download(const UpdateManifest& manifest, boo
 }
 
 bool UpdateService::LaunchUpdater(const UpdateManifest& manifest, const std::filesystem::path& archive,
-                                  DWORD app_pid, const std::filesystem::path& install_root,
-                                  const std::filesystem::path& health_file, std::wstring& error) const {
+                                   DWORD app_pid, const std::filesystem::path& install_root,
+                                   const std::filesystem::path& health_file, std::wstring& error) const {
     std::error_code file_error;
-    const auto helper_directory = UpdateRoot() / L"helper" / openreplay::FromUtf8(manifest.version);
+    const auto helper_directory = UpdateRoot() / L"helper" / openreplay::FromUtf8(manifest.version) /
+                                  (std::to_wstring(app_pid) + L"-" + std::to_wstring(GetTickCount64()));
     std::filesystem::create_directories(helper_directory, file_error);
     if (file_error) {
         error = L"Unable to create the updater directory";
         return false;
     }
-    const auto source = install_root / L"OpenReplay.Updater.exe";
-    const auto helper = helper_directory / L"OpenReplay.Updater.exe";
-    std::filesystem::copy_file(source, helper, std::filesystem::copy_options::overwrite_existing, file_error);
-    if (file_error) {
-        error = L"Unable to prepare OpenReplay.Updater.exe";
-        return false;
-    }
+    std::filesystem::path helper;
+    if (!ExtractUpdater(manifest, archive, helper_directory, helper, error)) return false;
     const std::wstring arguments = L"--archive=" + Quote(archive) + L" --target=" + Quote(install_root) +
         L" --health=" + Quote(health_file) + L" --sha256=" + openreplay::FromUtf8(manifest.asset_sha256) +
         L" --version=" + openreplay::FromUtf8(manifest.version) + L" --pid=" + std::to_wstring(app_pid) +

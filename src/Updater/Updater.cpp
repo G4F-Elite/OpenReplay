@@ -319,6 +319,63 @@ bool WaitForHostExit(const std::filesystem::path& directory, std::chrono::second
     return !HostRunning();
 }
 
+bool ProcessMatchesExecutable(HANDLE process, const std::filesystem::path& executable) noexcept {
+    std::array<wchar_t, 32768> path{};
+    DWORD length = static_cast<DWORD>(path.size());
+    if (!QueryFullProcessImageNameW(process, 0, path.data(), &length)) return false;
+
+    std::error_code expected_error;
+    std::error_code actual_error;
+    const auto expected = std::filesystem::weakly_canonical(executable, expected_error);
+    const auto actual = std::filesystem::weakly_canonical(
+        std::filesystem::path{std::wstring{path.data(), length}}, actual_error);
+    return !expected_error && !actual_error && _wcsicmp(expected.c_str(), actual.c_str()) == 0;
+}
+
+std::optional<std::uint64_t> ProcessCreationTime(HANDLE process) noexcept {
+    FILETIME creation{};
+    FILETIME exit{};
+    FILETIME kernel{};
+    FILETIME user{};
+    if (!GetProcessTimes(process, &creation, &exit, &kernel, &user)) return std::nullopt;
+    return (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32) | creation.dwLowDateTime;
+}
+
+bool WaitForAppExit(DWORD process_id, const std::filesystem::path& directory,
+                    std::chrono::seconds timeout) noexcept {
+    const auto process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, process_id);
+    if (!process) return GetLastError() == ERROR_INVALID_PARAMETER;
+
+    const auto creation_time = ProcessCreationTime(process);
+    const auto updater_creation_time = ProcessCreationTime(GetCurrentProcess());
+    const bool expected_process = ProcessMatchesExecutable(process, directory / L"OpenReplay.App.exe") &&
+                                  creation_time && updater_creation_time &&
+                                  *creation_time <= *updater_creation_time;
+    auto stopped = WaitForSingleObject(process, static_cast<DWORD>(timeout.count() * 1000)) == WAIT_OBJECT_0;
+    if (!stopped && expected_process) {
+        bool replacement_detected = false;
+        const auto terminable = OpenProcess(
+            PROCESS_TERMINATE | SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, process_id);
+        if (terminable) {
+            const auto terminable_creation_time = ProcessCreationTime(terminable);
+            const bool same_process = ProcessMatchesExecutable(
+                                          terminable, directory / L"OpenReplay.App.exe") &&
+                                      terminable_creation_time == creation_time;
+            if (same_process) {
+                Log(L"OpenReplay App did not stop gracefully; terminating the process from the installation directory");
+                stopped = TerminateProcess(terminable, 1) &&
+                          WaitForSingleObject(terminable, 5000) == WAIT_OBJECT_0;
+            } else {
+                replacement_detected = true;
+            }
+            CloseHandle(terminable);
+        }
+        if (!stopped && !replacement_detected) stopped = WaitForSingleObject(process, 0) == WAIT_OBJECT_0;
+    }
+    CloseHandle(process);
+    return stopped;
+}
+
 bool LaunchApp(const std::filesystem::path& target, std::wstring_view arguments,
                PROCESS_INFORMATION& process) {
     const auto executable = target / L"OpenReplay.App.exe";
@@ -370,9 +427,9 @@ int Run(HINSTANCE) {
         }
         return 4;
     }
-    if (const auto app = OpenProcess(SYNCHRONIZE, FALSE, update.app_pid)) {
-        WaitForSingleObject(app, 30000);
-        CloseHandle(app);
+    if (!WaitForAppExit(update.app_pid, update.target, 10s)) {
+        Log(L"OpenReplay App did not stop; update cancelled");
+        return 3;
     }
     RequestHostShutdown();
     if (!WaitForHostExit(update.target, 10s)) {
@@ -416,7 +473,8 @@ int Run(HINSTANCE) {
     }
     std::filesystem::rename(update.target, backup, error);
     if (error) {
-        Log(L"Unable to move the current installation to backup");
+        Log(L"Unable to move the current installation to backup (error " +
+            std::to_wstring(error.value()) + L")");
         std::filesystem::remove_all(staging, error);
         return 6;
     }

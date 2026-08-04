@@ -22,6 +22,7 @@ Notable user-facing changes are documented here. Development builds use the
 
 ### Fixed
 
+- Made updates launch the updater shipped in the verified archive and terminate only a stuck App process from the installation directory before replacing files.
 - Prevented capture recovery from interrupting active recordings or replay saves, and made rapid recording restarts use unique filenames.
 - Closed hidden clip windows and pending timers during exit, preserved settings edits, and initialized the replay toggle immediately.
 - Hardened update archive verification, version-specific health checks, and rollback after a failed update.

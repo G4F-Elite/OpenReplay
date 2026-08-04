@@ -38,6 +38,11 @@ void CaptureController::Stop() {
 }
 
 Response CaptureController::Handle(const Command& command) {
+    if (command.type == CommandType::Shutdown) {
+        stop_requested_ = true;
+        return {true, {{"message", "OpenReplay Host is shutting down"}}};
+    }
+
     std::scoped_lock lock{mutex_};
     try {
         switch (command.type) {
@@ -176,12 +181,11 @@ Response CaptureController::Handle(const Command& command) {
             return StatusResponse(StatusLocked());
         }
 
-        case CommandType::Shutdown:
-            stop_requested_ = true;
-            return {true, {{"message", "OpenReplay Host is shutting down"}}};
-
         case CommandType::Unknown:
             return ErrorResponse("Unknown IPC command");
+
+        case CommandType::Shutdown:
+            break;
         }
     } catch (const std::exception& exception) {
         WriteHostLog(std::string{"IPC command failed with an exception: "} + exception.what());

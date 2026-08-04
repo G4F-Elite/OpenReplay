@@ -21,6 +21,7 @@ Notable user-facing changes are documented here. Development builds use the
 
 ### Fixed
 
+- Fixed automatic updates getting stuck when the capture Host could not stop gracefully.
 - Kept the clip library lifecycle tied to the overlay, replaced its native title row with shared window controls, and aligned Discord and media actions consistently.
 - Opened the sidebar immediately on normal executable launch and removed the startup window flash in background mode.
 - Kept opening the sidebar from restoring fullscreen apps when the desktop is active, removed its taskbar entry, and sized it around the visible taskbar.

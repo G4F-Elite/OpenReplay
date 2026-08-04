@@ -253,6 +253,10 @@ void RequestHostShutdown() noexcept {
 }
 
 void TerminateHostInDirectory(const std::filesystem::path& directory) noexcept {
+    std::error_code expected_error;
+    const auto expected = std::filesystem::weakly_canonical(directory, expected_error);
+    if (expected_error) return;
+
     const auto snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snapshot == INVALID_HANDLE_VALUE) return;
     PROCESSENTRY32W entry{sizeof(entry)};
@@ -268,11 +272,10 @@ void TerminateHostInDirectory(const std::filesystem::path& directory) noexcept {
                 CloseHandle(process);
                 continue;
             }
-            std::error_code error;
+            std::error_code process_error;
             const auto process_directory = std::filesystem::weakly_canonical(
-                std::filesystem::path{std::wstring{path.data(), length}}.parent_path(), error);
-            const auto expected = std::filesystem::weakly_canonical(directory, error);
-            if (error || _wcsicmp(process_directory.c_str(), expected.c_str()) != 0) {
+                std::filesystem::path{std::wstring{path.data(), length}}.parent_path(), process_error);
+            if (process_error || _wcsicmp(process_directory.c_str(), expected.c_str()) != 0) {
                 CloseHandle(process);
                 continue;
             }
@@ -282,6 +285,16 @@ void TerminateHostInDirectory(const std::filesystem::path& directory) noexcept {
         } while (Process32NextW(snapshot, &entry));
     }
     CloseHandle(snapshot);
+}
+
+bool WaitForHostExit(const std::filesystem::path& directory, std::chrono::seconds timeout) noexcept {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (HostRunning() && std::chrono::steady_clock::now() < deadline) Sleep(100);
+    if (!HostRunning()) return true;
+
+    Log(L"Capture Host did not stop gracefully; terminating the process from the installation directory");
+    TerminateHostInDirectory(directory);
+    return !HostRunning();
 }
 
 bool LaunchApp(const std::filesystem::path& target, std::wstring_view arguments,
@@ -335,9 +348,7 @@ int Run(HINSTANCE) {
         CloseHandle(app);
     }
     RequestHostShutdown();
-    const auto host_deadline = std::chrono::steady_clock::now() + 30s;
-    while (HostRunning() && std::chrono::steady_clock::now() < host_deadline) Sleep(100);
-    if (HostRunning()) {
+    if (!WaitForHostExit(update.target, 10s)) {
         Log(L"Capture Host did not stop");
         PROCESS_INFORMATION restored{};
         if (LaunchApp(update.target, L"--background", restored)) {
@@ -403,9 +414,7 @@ int Run(HINSTANCE) {
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
     }
-    const auto host_stop_deadline = std::chrono::steady_clock::now() + 10s;
-    while (HostRunning() && std::chrono::steady_clock::now() < host_stop_deadline) Sleep(100);
-    if (HostRunning()) TerminateHostInDirectory(update.target);
+    WaitForHostExit(update.target, 5s);
     std::filesystem::rename(update.target, failed, error);
     error.clear();
     std::filesystem::rename(backup, update.target, error);

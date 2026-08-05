@@ -2469,7 +2469,7 @@ void MainWindow::PublishUpdateHealth() {
     health.close();
     if (!health) return;
     update_health_published_ = true;
-    if (!post_update_version_.empty()) {
+    if (!post_update_version_.empty() && visible_) {
         ShowToast(english_ ? L"OpenReplay updated" : L"OpenReplay обновлён",
                   english_ ? L"Version " + post_update_version_ + L" is running."
                            : L"Запущена версия " + post_update_version_ + L".",

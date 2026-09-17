@@ -17,6 +17,7 @@
     <Link><SubSystem>Windows</SubSystem><AdditionalDependencies>windowscodecs.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <Manifest Include="host.manifest" />
     <ClInclude Include="CaptureController.h" />
     <ClInclude Include="ICaptureEngine.h" />
     <ClInclude Include="ObsApi.h" />

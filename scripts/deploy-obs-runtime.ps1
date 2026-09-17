@@ -82,6 +82,7 @@ foreach ($file in $binaryFiles) {
 }
 foreach ($file in $helperFiles) {
     Copy-Item -LiteralPath (Join-Path $extracted "bin\64bit\$file") -Destination $output -Force
+    Copy-Item -LiteralPath (Join-Path $extracted "bin\64bit\$file") -Destination $binaryTarget -Force
 }
 foreach ($plugin in $plugins) {
     Copy-Item -LiteralPath (Join-Path $extracted "obs-plugins\64bit\$plugin.dll") -Destination $pluginTarget

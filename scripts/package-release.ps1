@@ -72,6 +72,7 @@ $required = @(
     'App.xbf',
     'MainWindow.xbf',
     'obs-ffmpeg-mux.exe',
+    'obs-runtime\bin\64bit\obs-ffmpeg-mux.exe',
     'obs-runtime\bin\64bit\obs.dll',
     'obs-runtime\obs-plugins\64bit\win-capture.dll',
     'obs-runtime\obs-plugins\64bit\win-wasapi.dll',

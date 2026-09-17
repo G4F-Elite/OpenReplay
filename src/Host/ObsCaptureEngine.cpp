@@ -3,7 +3,6 @@
 #include "openreplay/SettingsStore.h"
 
 #include <Windows.h>
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -17,7 +16,7 @@ namespace {
 
 constexpr int kModuleSuccess = 0;
 constexpr int kVideoSuccess = 0;
-constexpr long long kCaptureMethodWgc = 2;
+constexpr long long kCaptureMethodAuto = 0;
 constexpr long long kKeyframeIntervalSeconds = 1;
 constexpr std::uint32_t kReplayGopPaddingSeconds = 1;
 constexpr auto kReplayFrameStallTimeout = std::chrono::seconds{3};
@@ -140,8 +139,19 @@ bool ObsCaptureEngine::Initialize(const Settings& settings, std::string& error) 
     }
     monitor_ = selected == monitors.end() ? monitors.front() : *selected;
 
-    const auto width = static_cast<std::uint32_t>(monitor_.area.right - monitor_.area.left) & ~1u;
-    const auto height = static_cast<std::uint32_t>(monitor_.area.bottom - monitor_.area.top) & ~1u;
+    const auto monitor_width = monitor_.area.right - monitor_.area.left;
+    const auto monitor_height = monitor_.area.bottom - monitor_.area.top;
+    const auto width = static_cast<std::uint32_t>(monitor_width & ~1);
+    const auto height = static_cast<std::uint32_t>(monitor_height & ~1);
+    if (width < 2 || height < 2) {
+        error = "Windows reported an invalid monitor size: " + std::to_string(monitor_width) + "x" +
+                std::to_string(monitor_height);
+        Shutdown();
+        return false;
+    }
+    WriteHostLog("Selected monitor " + monitor_.id + " at " + std::to_string(monitor_width) + "x" +
+                 std::to_string(monitor_height) + ", video " + std::to_string(width) + "x" +
+                 std::to_string(height));
     const ObsAudioInfo audio{48000, ObsSpeakerLayout::Stereo};
     if (!api_.obs_reset_audio(&audio)) {
         error = "Unable to initialize the 48 kHz stereo audio pipeline";
@@ -233,10 +243,12 @@ bool ObsCaptureEngine::LoadModule(std::wstring_view name, bool required, std::st
 
 bool ObsCaptureEngine::CreateSources(std::string& error) {
     ObsData display_settings{api_.obs_data_create(), ObsDataReleaser{&api_}};
+    // OBS 32 registers the D3D11 duplicator implementation under monitor_capture.
+    // It selects displays by interface ID and supports WGC through these keys.
     api_.obs_data_set_string(display_settings.get(), "monitor_id", monitor_.id.c_str());
-    // DXGI duplication returns DXGI_ERROR_UNSUPPORTED on some supported systems
-    // while still leaving an active output. WGC avoids a permanently black stream.
-    api_.obs_data_set_int(display_settings.get(), "method", kCaptureMethodWgc);
+    // Auto avoids forcing WGC on desktop capture. OBS selects DXGI when stable
+    // and falls back to WGC for displays that need it.
+    api_.obs_data_set_int(display_settings.get(), "method", kCaptureMethodAuto);
     api_.obs_data_set_bool(display_settings.get(), "capture_cursor", settings_.capture_cursor);
     api_.obs_data_set_bool(display_settings.get(), "force_sdr", true);
     display_ = api_.obs_source_create("monitor_capture", "OpenReplay Display", display_settings.get(), nullptr);
@@ -253,11 +265,13 @@ bool ObsCaptureEngine::CreateAudioSources(std::string& error) {
     for (std::size_t index = 0; index < settings_.desktop_audio_devices.size(); ++index) {
         const auto& device = settings_.desktop_audio_devices[index];
         ObsData desktop_settings{api_.obs_data_create(), ObsDataReleaser{&api_}};
+        // Keep OBS's literal "default" value so its WASAPI notifier can follow
+        // endpoint changes instead of freezing the endpoint resolved at startup.
         api_.obs_data_set_string(desktop_settings.get(), "device_id", device.id.c_str());
         api_.obs_data_set_bool(desktop_settings.get(), "use_device_timing", true);
         const auto name = std::string{"OpenReplay Desktop Audio "} + std::to_string(index + 1);
         WriteHostLog("Configuring desktop audio source " + std::to_string(index + 1) +
-                     ": id=" + device.id + ", name=" + device.name);
+                      ": id=" + device.id + ", name=" + device.name);
         auto* source = api_.obs_source_create("wasapi_output_capture", name.c_str(), desktop_settings.get(), nullptr);
         if (!source) {
             error = "Unable to create desktop WASAPI capture source " + std::to_string(index + 1);
@@ -272,6 +286,7 @@ bool ObsCaptureEngine::CreateAudioSources(std::string& error) {
             api_.obs_source_release(source);
             return false;
         }
+        api_.obs_source_inc_active(source);
         desktop_audio_sources_.push_back(std::move(audio_source));
     }
 
@@ -283,7 +298,7 @@ bool ObsCaptureEngine::CreateAudioSources(std::string& error) {
             api_.obs_data_set_bool(mic_settings.get(), "use_device_timing", false);
             const auto name = std::string{"OpenReplay Microphone "} + std::to_string(index + 1);
             WriteHostLog("Configuring microphone source " + std::to_string(index + 1) +
-                         ": id=" + device.id + ", name=" + device.name);
+                          ": id=" + device.id + ", name=" + device.name);
             auto* source = api_.obs_source_create("wasapi_input_capture", name.c_str(), mic_settings.get(), nullptr);
             if (!source) {
                 error = "Unable to create microphone WASAPI capture source " + std::to_string(index + 1);
@@ -299,12 +314,12 @@ bool ObsCaptureEngine::CreateAudioSources(std::string& error) {
                 api_.obs_source_release(source);
                 return false;
             }
+            api_.obs_source_inc_active(source);
             microphone_sources_.push_back(std::move(audio_source));
         }
     }
-    std::uint32_t channel = 1;
-    for (const auto& source : desktop_audio_sources_) api_.obs_set_output_source(channel++, source->source);
-    for (const auto& source : microphone_sources_) api_.obs_set_output_source(channel++, source->source);
+    // WASAPI sources are standalone audio inputs. Keep them active so their
+    // capture callbacks run; mixer masks route samples to encoded tracks.
     return true;
 }
 
@@ -324,6 +339,12 @@ void ObsCaptureEngine::AudioLevelUpdated(void* context, const float*, const floa
     auto* source = static_cast<AudioSource*>(context);
     if (!source || !peak) return;
 
+    if (!source->callback_seen.exchange(true, std::memory_order_relaxed)) {
+        WriteHostLog(std::string{"Audio callback received: kind="} +
+                     (source->microphone ? "input" : "output") + ", id=" + source->device_id);
+    }
+
+    // obs_volmeter callbacks expose peak levels in dB. Keep -60 dB as meter floor.
     float strongest_db = -60.0F;
     for (std::size_t channel = 0; channel < 8; ++channel) {
         if (std::isfinite(peak[channel])) strongest_db = std::max(strongest_db, peak[channel]);
@@ -785,7 +806,10 @@ void ObsCaptureEngine::ReleaseAudioSource(AudioSource& source) noexcept {
         api_.obs_volmeter_destroy(source.meter);
         source.meter = nullptr;
     }
-    if (source.source) api_.obs_source_release(source.source);
+    if (source.source) {
+        api_.obs_source_dec_active(source.source);
+        api_.obs_source_release(source.source);
+    }
     source.source = nullptr;
 }
 

@@ -26,9 +26,15 @@ std::filesystem::path ExecutableDirectory() {
 
 std::filesystem::path FindRuntimeRoot() {
     const auto local = ExecutableDirectory();
-    const auto bundled = local / L"obs-runtime" / L"bin" / L"64bit";
-    if (std::filesystem::exists(bundled / L"obs.dll")) return bundled;
-    if (std::filesystem::exists(local / L"obs.dll")) return local;
+    const std::array candidates{
+        local / L"obs-runtime" / L"bin" / L"64bit",
+        local / L"bin" / L"64bit",
+        local,
+        std::filesystem::current_path() / L"obs-runtime" / L"bin" / L"64bit",
+    };
+    for (const auto& candidate : candidates) {
+        if (std::filesystem::is_regular_file(candidate / L"obs.dll")) return candidate;
+    }
     return {};
 }
 
@@ -78,7 +84,8 @@ bool ObsApi::Load(std::string& error) {
     g_graphics_device_lost = false;
     runtime_root_ = FindRuntimeRoot();
     if (runtime_root_.empty()) {
-        error = "OBS runtime was not found beside Host. Run scripts\\deploy-obs-runtime.ps1.";
+        error = "Bundled OBS runtime was not found beside OpenReplay.Host.exe. "
+                "Install the complete OpenReplay package or run scripts\\deploy-obs-runtime.ps1.";
         return false;
     }
 
@@ -155,6 +162,8 @@ bool ObsApi::ResolveAll(std::string& error) {
     OPENREPLAY_OBS_RESOLVE(obs_data_set_bool);
     OPENREPLAY_OBS_RESOLVE(obs_source_create);
     OPENREPLAY_OBS_RESOLVE(obs_source_release);
+    OPENREPLAY_OBS_RESOLVE(obs_source_inc_active);
+    OPENREPLAY_OBS_RESOLVE(obs_source_dec_active);
     OPENREPLAY_OBS_RESOLVE(obs_source_set_audio_mixers);
     OPENREPLAY_OBS_RESOLVE(obs_source_set_volume);
     OPENREPLAY_OBS_RESOLVE(obs_volmeter_create);

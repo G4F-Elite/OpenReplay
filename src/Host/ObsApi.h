@@ -112,6 +112,8 @@ public:
 
     obs_source_t* (*obs_source_create)(const char*, const char*, obs_data_t*, obs_data_t*){};
     void (*obs_source_release)(obs_source_t*){};
+    void (*obs_source_inc_active)(obs_source_t*){};
+    void (*obs_source_dec_active)(obs_source_t*){};
     void (*obs_source_set_audio_mixers)(obs_source_t*, std::uint32_t){};
     void (*obs_source_set_volume)(obs_source_t*, float){};
 

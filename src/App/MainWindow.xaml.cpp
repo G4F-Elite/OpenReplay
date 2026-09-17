@@ -2227,7 +2227,7 @@ void MainWindow::PollStatus() {
     ReconcileAudioDevices();
     UpdateStorageSpace();
     if (settings_reload_in_flight_) return;
-    const auto response = pipe_client_.Request("status", std::chrono::milliseconds{80});
+    const auto response = pipe_client_.Request("status", std::chrono::milliseconds{250});
     if (!response.ok) {
         host_connected_ = false;
         ++host_poll_failures_;
@@ -2566,16 +2566,20 @@ void MainWindow::ApplyResponse(const openreplay::Response& response) {
                                                           : secondary_text_brush_);
 
     recording_ = FieldIsTrue(response, "recording");
+    const bool audio_signal = FieldIsTrue(response, "audio_signal");
+    const bool capture_ready = pipeline_error.empty() && (state == "running" || state == "disabled");
     long long recording_seconds = 0;
     try { recording_seconds = std::stoll(Field(response, "recording_seconds")); } catch (...) {}
-    RecordingStateText().Text(recording_ ? DurationText(recording_seconds)
-                                         : (english_ ? L"Ready to record" : L"Готово к записи"));
-    RecordingStateText().Foreground(recording_ ? danger_brush_ : secondary_text_brush_);
+    const auto audio_text = audio_signal ? (english_ ? L"audio OK" : L"звук есть")
+                                         : (english_ ? L"no audio signal" : L"нет сигнала звука");
+    const auto ready_text = (english_ ? std::wstring{L"Ready to record  •  "} : std::wstring{L"Готово к записи  •  "}) + audio_text;
+    RecordingStateText().Text(recording_ ? DurationText(recording_seconds) + L"  •  " + audio_text : ready_text);
+    RecordingStateText().Foreground(recording_ ? danger_brush_ : (audio_signal ? secondary_text_brush_ : danger_brush_));
     RecordingButton().Content(winrt::box_value(recording_ ? (english_ ? L"Stop recording" : L"Остановить запись")
                                                           : (english_ ? L"Start recording" : L"Начать запись")));
     SaveReplayButton().IsEnabled(FieldIsTrue(response, "replay_requested") && state == "running");
-    RecordingButton().IsEnabled(true);
-    ScreenshotButton().IsEnabled(true);
+    RecordingButton().IsEnabled(capture_ready);
+    ScreenshotButton().IsEnabled(capture_ready);
     UpdateAudioLevels(response);
     ApplyReplaySaveStatus(response);
 }

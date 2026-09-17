@@ -347,6 +347,14 @@ void AudioDevicesReconcileByNameAndDefault() {
           "remembered default device did not preserve its volume");
 }
 
+void AudioSignalStatusUsesNormalizedPeaks() {
+    openreplay::CaptureStatus status;
+    status.audio_levels = {{false, "output", 0.0F}, {true, "input", 0.02F}};
+    Check(status.HasAudioSignal(), "audio signal status ignored an active source");
+    status.audio_levels[1].peak = 0.01F;
+    Check(!status.HasAudioSignal(), "audio signal status accepted the meter floor");
+}
+
 void ReplayHotkeysNormalizeToLimit() {
     openreplay::Settings settings;
     settings.replay_hotkeys.assign(10, {true, "Ctrl+F10", 5000});
@@ -441,6 +449,7 @@ int wmain() {
         ReplayDurationCommandParses();
         AudioDevicesNormalize();
         AudioDevicesReconcileByNameAndDefault();
+        AudioSignalStatusUsesNormalizedPeaks();
         ReplayHotkeysNormalizeToLimit();
         ScreenshotHotkeyNormalizes();
         RecordingHotkeyNormalizes();

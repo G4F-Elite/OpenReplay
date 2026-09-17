@@ -19,9 +19,13 @@ Notable user-facing changes are documented here. Development builds use the
 - Changed the default recording, replay, and screenshot shortcuts from `Ctrl+F9...F12` to `Alt+F9...F12`.
 - Added Discord sharing with H.264/AAC export, dynamic bitrate and size verification, file copy, secure webhook uploads with embeds, and optional automatic sending after replay saves.
 - Added a separate clip library window using shared controls, video thumbnails, a non-overlapping player viewport, file metadata, and Discord actions.
+- Added an audio-signal indicator to the recording status and gated recording and screenshots on capture readiness.
 
 ### Fixed
 
+- Kept WASAPI desktop and microphone sources active so clips capture audio instead of silence, and routed them through mixer masks instead of output channels.
+- Let OBS select the display-capture method automatically and validated the selected monitor size before initializing video.
+- Shipped `obs-ffmpeg-mux.exe` inside the bundled OBS runtime directory and embedded a host manifest, so installed builds find the runtime and support long paths and per-monitor DPI.
 - Prevented the post-update confirmation from opening an empty standalone window during background startup.
 - Made updates launch the updater shipped in the verified archive and terminate only a stuck App process from the installation directory before replacing files.
 - Prevented capture recovery from interrupting active recordings or replay saves, and made rapid recording restarts use unique filenames.

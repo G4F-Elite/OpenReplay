@@ -117,6 +117,7 @@ Response StatusResponse(const CaptureStatus& status) {
     response.fields["replay_save_output"] = ToUtf8(status.replay_save.output.wstring());
     response.fields["replay_save_error"] = status.replay_save.error;
     response.fields["audio_level_count"] = std::to_string(status.audio_levels.size());
+    response.fields["audio_signal"] = status.HasAudioSignal() ? "true" : "false";
     for (std::size_t index = 0; index < status.audio_levels.size(); ++index) {
         const auto& level = status.audio_levels[index];
         const auto prefix = "audio_level_" + std::to_string(index);

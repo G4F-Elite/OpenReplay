@@ -64,6 +64,7 @@ private:
         bool microphone{false};
         std::string device_id;
         std::atomic<float> peak{0.0F};
+        std::atomic_bool callback_seen{false};
     };
     struct ReplayOutput {
         ObsCaptureEngine* owner{};

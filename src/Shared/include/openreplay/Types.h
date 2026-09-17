@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <algorithm>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -105,6 +106,12 @@ struct CaptureStatus {
     std::filesystem::path last_output;
     ReplaySaveStatus replay_save;
     std::vector<AudioLevel> audio_levels;
+
+    [[nodiscard]] bool HasAudioSignal() const noexcept {
+        return std::ranges::any_of(audio_levels, [](const AudioLevel& level) {
+            return level.peak > 0.01F;
+        });
+    }
 };
 
 std::string_view ToString(CaptureState value) noexcept;

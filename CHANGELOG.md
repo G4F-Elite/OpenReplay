@@ -5,11 +5,16 @@ Notable user-facing changes are documented here. Development builds use the
 
 ## [Unreleased]
 
+No changes yet.
+
+## [0.1.9] - 2026-09-22
+
 ### Changed
 
 - Reduced replay-save latency by removing unnecessary MP4 fast-start rewriting and using realtime NVENC presets.
 - Rebuilt the performance overlay as a live dashboard with no-admin foreground-window frame telemetry and a frametime graph.
 - Made the frametime graph use high-precision samples, adaptive scaling, raw sample dots, and a readable local trend.
+- Added Space playback controls in Clips: tap to pause or resume, hold for temporary 2x playback.
 
 ### Added
 
@@ -38,7 +43,6 @@ Notable user-facing changes are documented here. Development builds use the
 - Opened the sidebar immediately on normal executable launch and removed the startup window flash in background mode.
 - Kept opening the sidebar from restoring fullscreen apps when the desktop is active, removed its taskbar entry, and sized it around the visible taskbar.
 - Removed the Windows capture border from performance telemetry by using borderless DXGI display updates.
-
 - Replaced the fixed 30-second replay-save wait with size-aware mux timeouts and automatic stalled-encoder recovery.
 
 ## [0.1.4] - 2026-07-24
@@ -95,8 +99,8 @@ Notable user-facing changes are documented here. Development builds use the
 
 - Initial OpenReplay release with instant replay, recording, screenshots, audio-device selection, and the WinUI overlay.
 
-[Unreleased]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.4...HEAD
-[0.1.4]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.3...v0.1.4
+[Unreleased]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.4...v0.1.9
 [0.1.3]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.0...v0.1.1

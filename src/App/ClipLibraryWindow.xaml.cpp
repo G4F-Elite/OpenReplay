@@ -40,6 +40,8 @@ using Thickness = winrt::Microsoft::UI::Xaml::Thickness;
 using Visibility = winrt::Microsoft::UI::Xaml::Visibility;
 using ScrollBarVisibility = winrt::Microsoft::UI::Xaml::Controls::ScrollBarVisibility;
 
+constexpr auto kSpaceHoldDelay = std::chrono::milliseconds{350};
+
 bool IsClip(const std::filesystem::directory_entry& entry) {
     std::error_code error;
     if (!entry.is_regular_file(error)) return false;
@@ -109,6 +111,11 @@ ClipLibraryWindow::ClipLibraryWindow() {
         presenter.SetBorderAndTitleBar(true, false);
     }
     window.AppWindow().Closing({this, &ClipLibraryWindow::Window_Closing});
+    window.Activated([this](auto&&, auto const& args) {
+        if (args.WindowActivationState() == Microsoft::UI::Xaml::WindowActivationState::Deactivated) {
+            CancelSpaceHold();
+        }
+    });
     HWND handle{};
     if (SUCCEEDED(window.as<::IWindowNative>()->get_WindowHandle(&handle))) {
         MONITORINFO monitor{sizeof(monitor)};
@@ -124,6 +131,10 @@ ClipLibraryWindow::ClipLibraryWindow() {
     playback_feedback_timer_ = DispatcherQueue().CreateTimer();
     playback_feedback_timer_.Interval(std::chrono::milliseconds{16});
     playback_feedback_timer_.Tick([this](auto&&, auto&&) { UpdatePlaybackFeedback(); });
+    space_hold_timer_ = DispatcherQueue().CreateTimer();
+    space_hold_timer_.Interval(kSpaceHoldDelay);
+    space_hold_timer_.IsRepeating(false);
+    space_hold_timer_.Tick([this](auto&&, auto&&) { StartSpaceBoost(); });
 }
 
 void ClipLibraryWindow::Configure(std::filesystem::path output_directory, bool english, bool webhook_available,
@@ -149,6 +160,7 @@ void ClipLibraryWindow::ActivateWindow() {
 }
 
 void ClipLibraryWindow::HideWindow() {
+    CancelSpaceHold();
     if (fullscreen_) {
         ToggleFullscreen();
     }
@@ -162,6 +174,7 @@ void ClipLibraryWindow::HideWindow() {
 
 void ClipLibraryWindow::Shutdown() {
     closing_for_exit_ = true;
+    CancelSpaceHold();
     if (playback_timer_) playback_timer_.Stop();
     if (playback_feedback_timer_) playback_feedback_timer_.Stop();
     if (player_ && player_.MediaPlayer()) player_.MediaPlayer().Pause();
@@ -247,10 +260,56 @@ void ClipLibraryWindow::SetFullscreenLayout(bool fullscreen) {
 }
 
 void ClipLibraryWindow::Root_KeyDown(Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args) {
+    if (args.Key() == Windows::System::VirtualKey::Space && space_down_) {
+        args.Handled(true);
+        return;
+    }
+    if (delete_in_progress_ || speed_selector_.IsDropDownOpen()) return;
     if (fullscreen_ && args.Key() == Windows::System::VirtualKey::Escape) {
         ToggleFullscreen();
         args.Handled(true);
+        return;
     }
+    if (args.Key() != Windows::System::VirtualKey::Space || !player_source_) return;
+    if ((GetKeyState(VK_CONTROL) | GetKeyState(VK_MENU) | GetKeyState(VK_SHIFT) |
+         GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & 0x8000) return;
+    args.Handled(true);
+    // A repeat after cancellation must not start a new gesture on another clip.
+    if (args.KeyStatus().WasKeyDown) return;
+    space_down_ = true;
+    space_pressed_at_ = std::chrono::steady_clock::now();
+    space_hold_timer_.Start();
+}
+
+void ClipLibraryWindow::Root_KeyUp(Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args) {
+    if (args.Key() != Windows::System::VirtualKey::Space || !space_down_) return;
+    args.Handled(true);
+    const bool tap = std::chrono::steady_clock::now() - space_pressed_at_ < kSpaceHoldDelay;
+    CancelSpaceHold();
+    if (tap) TogglePlayback();
+}
+
+void ClipLibraryWindow::StartSpaceBoost() {
+    if (!space_down_ || !player_source_) return;
+    const auto session = media_player_.PlaybackSession();
+    const auto state = session.PlaybackState();
+    if (state != Windows::Media::Playback::MediaPlaybackState::Playing &&
+        state != Windows::Media::Playback::MediaPlaybackState::Paused) return;
+    playback_rate_before_hold_ = session.PlaybackRate();
+    playing_before_hold_ = state == Windows::Media::Playback::MediaPlaybackState::Playing;
+    session.PlaybackRate(2.0);
+    space_boost_active_ = true;
+    if (!playing_before_hold_) TogglePlayback();
+}
+
+void ClipLibraryWindow::CancelSpaceHold() {
+    if (space_hold_timer_) space_hold_timer_.Stop();
+    space_down_ = false;
+    if (!space_boost_active_) return;
+    space_boost_active_ = false;
+    media_player_.PlaybackSession().PlaybackRate(playback_rate_before_hold_);
+    if (!playing_before_hold_) media_player_.Pause();
+    UpdatePlaybackUi();
 }
 
 void ClipLibraryWindow::BuildUi() {
@@ -261,7 +320,8 @@ void ClipLibraryWindow::BuildUi() {
 
     root_ = Grid{};
     root_.Background(theme.root);
-    root_.KeyDown([this](auto&&, auto const& args) { Root_KeyDown(args); });
+    root_.PreviewKeyDown([this](auto&&, auto const& args) { Root_KeyDown(args); });
+    root_.PreviewKeyUp([this](auto&&, auto const& args) { Root_KeyUp(args); });
     AddRow(root_, 64, GridUnitType::Pixel);
     AddRow(root_, 1, GridUnitType::Star);
 
@@ -348,6 +408,7 @@ void ClipLibraryWindow::BuildUi() {
     player_.HorizontalAlignment(HorizontalAlignment::Stretch);
     player_.VerticalAlignment(VerticalAlignment::Stretch);
     player_.PointerPressed([this](auto&&, auto const& args) {
+        play_button_.Focus(FocusState::Programmatic);
         TogglePlayback();
         args.Handled(true);
     });
@@ -463,6 +524,7 @@ void ClipLibraryWindow::BuildUi() {
     speed_selector_.Margin(Thickness{8, 0, 0, 0});
     speed_selector_.SelectionChanged([this](auto&&, auto&&) {
         if (!media_player_ || speed_selector_.SelectedIndex() < 0) return;
+        CancelSpaceHold();
         constexpr std::array<double, 7> rates{0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0};
         const auto index = static_cast<std::size_t>(speed_selector_.SelectedIndex());
         if (index >= rates.size()) return;
@@ -536,6 +598,9 @@ void ClipLibraryWindow::ApplyLanguage() {
         fullscreen_button_, winrt::box_value(fullscreen_
             ? (english_ ? L"Exit full screen" : L"Выйти из полноэкранного режима")
             : (english_ ? L"Full screen" : L"Полноэкранный режим")));
+    winrt::Microsoft::UI::Xaml::Controls::ToolTipService::SetToolTip(
+        play_button_, winrt::box_value(english_ ? L"Play / Pause (Space); hold Space for 2x"
+                                               : L"Пауза / продолжить (Пробел); удерживайте Пробел для 2x"));
     winrt::Microsoft::UI::Xaml::Controls::ToolTipService::SetToolTip(
         speed_selector_, winrt::box_value(english_ ? L"Playback speed" : L"Скорость воспроизведения"));
     open_button_.Content(winrt::box_value(english_ ? L"Open" : L"Открыть"));
@@ -646,6 +711,7 @@ void ClipLibraryWindow::RefreshClips() {
 }
 
 void ClipLibraryWindow::ResetSelection() {
+    CancelSpaceHold();
     ++source_generation_;
     selected_clip_.clear();
     if (media_player_) {
@@ -678,6 +744,8 @@ void ClipLibraryWindow::UpdateSelectionStyles() {
 
 void ClipLibraryWindow::SelectClip(const std::filesystem::path& path) {
     if (path == selected_clip_ && player_source_) return;
+    CancelSpaceHold();
+    play_button_.Focus(Microsoft::UI::Xaml::FocusState::Programmatic);
     ++source_generation_;
     selected_clip_ = path;
     open_button_.IsEnabled(true);
@@ -705,6 +773,7 @@ winrt::fire_and_forget ClipLibraryWindow::OpenClipAsync(std::filesystem::path pa
         }
         if (const auto self = weak.get()) {
             if (self->selected_clip_ != path || self->source_generation_ != generation) co_return;
+            self->CancelSpaceHold();
             const auto source = winrt::Windows::Media::Core::MediaSource::CreateFromStorageFile(file);
             self->player_source_ = source;
             self->media_player_.Source(source);
@@ -834,6 +903,7 @@ void ClipLibraryWindow::OpenSelectedClip() {
 winrt::fire_and_forget ClipLibraryWindow::DeleteSelectedClipAsync() {
     const auto path = selected_clip_;
     if (path.empty() || delete_in_progress_) co_return;
+    CancelSpaceHold();
     delete_in_progress_ = true;
     delete_button_.IsEnabled(false);
     const auto weak = get_weak();

@@ -25,6 +25,9 @@ private:
     void PositionBesideOverlay();
     void SetFullscreenLayout(bool fullscreen);
     void Root_KeyDown(Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args);
+    void Root_KeyUp(Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args);
+    void StartSpaceBoost();
+    void CancelSpaceHold();
     void ApplyLanguage();
     void RefreshClips();
     void ResetSelection();
@@ -94,9 +97,15 @@ private:
     Microsoft::UI::Xaml::Controls::MediaPlayerElement player_{nullptr};
     Microsoft::UI::Dispatching::DispatcherQueueTimer playback_timer_{nullptr};
     Microsoft::UI::Dispatching::DispatcherQueueTimer playback_feedback_timer_{nullptr};
+    Microsoft::UI::Dispatching::DispatcherQueueTimer space_hold_timer_{nullptr};
     winrt::Windows::Media::Playback::MediaPlayer media_player_{nullptr};
     winrt::Windows::Media::Core::MediaSource player_source_{nullptr};
     std::chrono::steady_clock::time_point playback_feedback_started_{};
+    std::chrono::steady_clock::time_point space_pressed_at_{};
+    double playback_rate_before_hold_{1.0};
+    bool space_down_{false};
+    bool space_boost_active_{false};
+    bool playing_before_hold_{false};
     std::uint64_t source_generation_{0};
     std::uint64_t clip_list_generation_{0};
     bool updating_timeline_{false};

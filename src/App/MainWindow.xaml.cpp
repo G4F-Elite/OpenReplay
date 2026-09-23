@@ -1164,6 +1164,9 @@ void MainWindow::InitializeWindow() {
     performance_overlay_.Initialize(window);
     AddTrayIcon();
     InitializeNotificationWindow();
+    ShowWindow(window, SW_HIDE);
+    Microsoft::UI::Xaml::Window xaml_window = *this;
+    xaml_window.AppWindow().Hide();
 
     if (!hotkey_registered_) {
         ShowNotification(L"Alt+Z уже используется другим приложением. Закройте NVIDIA Overlay или измените его сочетание.", true);
@@ -1171,6 +1174,14 @@ void MainWindow::InitializeWindow() {
     if (!performance_hotkey_registered_) {
         ShowNotification(L"Alt+R уже используется другим приложением. Отключите конфликтующий performance overlay.", true);
     }
+}
+
+void MainWindow::HideOnLaunch() {
+    visible_ = false;
+    const auto window_handle = GetWindowHandle();
+    ShowWindow(window_handle, SW_HIDE);
+    Microsoft::UI::Xaml::Window window = *this;
+    window.AppWindow().Hide();
 }
 
 void MainWindow::UnregisterConfigurableHotkeys() noexcept {

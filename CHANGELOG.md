@@ -5,7 +5,9 @@ Notable user-facing changes are documented here. Development builds use the
 
 ## [Unreleased]
 
-No changes yet.
+### Fixed
+
+- Explicitly hid the main window during background startup after updates.
 
 ## [0.1.10] - 2026-09-23
 

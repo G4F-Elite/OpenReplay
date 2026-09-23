@@ -18,6 +18,7 @@ struct MainWindow : MainWindowT<MainWindow> {
     ~MainWindow();
 
     void ConfigureUpdateLaunch(std::wstring version, std::filesystem::path health_file);
+    void HideOnLaunch();
     void BeginUpdateChecks();
     void ShowOnLaunch();
 

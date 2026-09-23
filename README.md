@@ -31,7 +31,7 @@ OpenReplay is a Windows desktop recorder focused on a resilient instant replay b
 
 Download either the Windows x64 installer or portable ZIP from the [latest stable release](https://github.com/G4F-Elite/OpenReplay/releases/latest). An automatically refreshed [development prerelease](https://github.com/G4F-Elite/OpenReplay/releases/tag/dev) is also available for testing upcoming changes. The per-user installer does not require administrator access and adds Start menu/uninstall entries. For portable use, extract the ZIP into a writable folder and run `OpenReplay.App.exe`. OBS Studio is not required in either mode.
 
-OpenReplay checks signed stable-release metadata in the background by default. A downloaded update is applied only after you choose `Restart to update` and capture is idle. The updater verifies the signed manifest and ZIP SHA-256, keeps the previous installation until the new App and Host pass a health check, and rolls back if startup fails.
+OpenReplay checks signed stable-release metadata in the background by default. When developer updates are enabled, it checks both signed feeds and keeps stable releases eligible to replace developer prereleases. A downloaded update is applied only after you choose `Restart to update` and capture is idle. The updater verifies the signed manifest and ZIP SHA-256, keeps the previous installation until the new App and Host pass a health check, and rolls back if startup fails.
 
 Protected Windows surfaces are intentionally not bypassed. They may appear black, but the requested replay state remains enabled and capture recovery continues after the protected surface closes.
 
@@ -64,7 +64,7 @@ Create the installer from the portable release stage:
 .\scripts\test-installer.ps1
 ```
 
-The public CI workflow builds and tests every pull request and `main` push. After a successful `main` build, the dev-release workflow refreshes the `dev` GitHub prerelease with versioned installer, portable assets, and notes from the `Unreleased` changelog section. Stable releases require changing `Version.h` to the `stable` channel, adding a matching changelog section, and pushing the matching tag, for example `v0.1.4`. The stable workflow publishes the installer, portable ZIP, checksums, signed update manifest, signature, and curated changelog notes. Stable automatic updates continue to use only the signed stable portable payload for both installation modes; dev prereleases never replace `releases/latest`.
+The public CI workflow builds and tests every pull request and `main` push. After a successful `main` build, the dev-release workflow refreshes the `dev` GitHub prerelease with versioned installer, portable assets, and notes from the `Unreleased` changelog section. Stable releases require changing `Version.h` to the `stable` channel, adding a matching changelog section, and pushing the matching tag, for example `v0.1.4`. The stable workflow publishes the installer, portable ZIP, checksums, signed update manifest, signature, and curated changelog notes. With developer updates enabled, the updater checks both signed feeds; stable releases remain eligible and take precedence over developer prereleases when appropriate, while developer prereleases never replace `releases/latest`.
 
 MP4 is the default for broad compatibility, while MKV remains available from Storage settings. Distributable builds must retain the OBS runtime notice and comply with the GPL and the licenses of bundled runtime dependencies.
 

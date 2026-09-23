@@ -7,6 +7,12 @@ Notable user-facing changes are documented here. Development builds use the
 
 No changes yet.
 
+## [0.1.10] - 2026-09-23
+
+### Fixed
+
+- Kept stable releases eligible when developer updates are enabled, so a stable release can replace an installed developer prerelease.
+
 ## [0.1.9] - 2026-09-22
 
 ### Changed
@@ -99,7 +105,8 @@ No changes yet.
 
 - Initial OpenReplay release with instant replay, recording, screenshots, audio-device selection, and the WinUI overlay.
 
-[Unreleased]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.4...v0.1.9
 [0.1.3]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.1...v0.1.2

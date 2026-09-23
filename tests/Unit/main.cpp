@@ -165,6 +165,39 @@ void UpdateMetadataParsesAndComparesVersions() {
           "developer update with a mismatched asset URL was accepted");
 }
 
+void UpdatesRespectReleasePrecedence() {
+    openreplay::UpdateManifest stable;
+    stable.schema = 1;
+    stable.product = "OpenReplay";
+    stable.channel = "stable";
+    stable.version = "0.1.9";
+    stable.tag = "v0.1.9";
+    stable.asset_name = "OpenReplay-0.1.9-win-x64.zip";
+    stable.asset_url = "https://github.com/G4F-Elite/OpenReplay/releases/download/v0.1.9/" +
+                       stable.asset_name;
+    stable.architecture = "x64";
+    stable.asset_size = 123456;
+    stable.asset_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    Check(openreplay::IsStableReleasePreferred("0.1.9", "0.1.9-dev.18"),
+          "stable release did not take precedence over its developer build");
+    Check(!openreplay::IsStableReleasePreferred("0.1.9", "0.1.10-dev.1"),
+          "stable release took precedence over a newer developer build");
+    Check(!openreplay::IsStableReleasePreferred("invalid", "0.1.9-dev.18"),
+          "invalid stable version was preferred");
+
+    auto developer = stable;
+    developer.channel = "dev";
+    developer.version = "0.1.9-dev.19";
+    developer.tag = "dev";
+    developer.asset_url = "https://github.com/G4F-Elite/OpenReplay/releases/download/dev/" +
+                          developer.asset_name;
+    Check(!openreplay::IsValidUpdate(developer, "0.1.9", "dev"),
+          "developer build replaced its stable release");
+    developer.version = "0.1.10-dev.1";
+    Check(openreplay::IsValidUpdate(developer, "0.1.9", "dev"),
+          "newer developer build was not offered after a stable release");
+}
+
 void UpdateSignatureFixtureVerifies() {
     const std::string content{"OpenReplay update signature fixture v1"};
     const std::string signature_base64{
@@ -441,6 +474,7 @@ int wmain() {
         SettingsRoundTrip();
         DefaultSettingsUseEnglishAndMp4();
         UpdateMetadataParsesAndComparesVersions();
+        UpdatesRespectReleasePrecedence();
         UpdateSignatureFixtureVerifies();
         SettingsChangeClassification();
         LegacyAudioSettingsMigrate();

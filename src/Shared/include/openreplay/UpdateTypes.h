@@ -34,6 +34,8 @@ struct UpdateManifest {
 };
 
 std::optional<SemanticVersion> ParseSemanticVersion(std::string_view value) noexcept;
+bool IsStableReleasePreferred(std::string_view stable_version,
+                              std::string_view developer_version) noexcept;
 std::optional<UpdateManifest> ParseUpdateManifest(std::string_view json);
 bool IsValidUpdate(const UpdateManifest& manifest, std::string_view current_version,
                    std::string_view channel) noexcept;

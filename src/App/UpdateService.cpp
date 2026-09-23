@@ -231,33 +231,47 @@ std::filesystem::path UpdateService::UpdateRoot() {
 }
 
 UpdateCheckResult UpdateService::Check(bool developer_channel) const {
-    UpdateCheckResult result;
-    std::wstring error;
-    const auto manifest_url = developer_channel ? openreplay::kDevUpdateManifestUrl
-                                                : openreplay::kUpdateManifestUrl;
-    const auto signature_url = developer_channel ? openreplay::kDevUpdateSignatureUrl
-                                                 : openreplay::kUpdateSignatureUrl;
-    const auto manifest = DownloadMemory(openreplay::FromUtf8(manifest_url), 1024 * 1024, error);
-    if (!manifest) {
-        result.error = std::move(error);
+    const auto check_channel = [](bool developer) {
+        UpdateCheckResult result;
+        std::wstring error;
+        const auto manifest_url = developer ? openreplay::kDevUpdateManifestUrl
+                                            : openreplay::kUpdateManifestUrl;
+        const auto signature_url = developer ? openreplay::kDevUpdateSignatureUrl
+                                             : openreplay::kUpdateSignatureUrl;
+        const auto manifest = DownloadMemory(openreplay::FromUtf8(manifest_url), 1024 * 1024, error);
+        if (!manifest) {
+            result.error = std::move(error);
+            return result;
+        }
+        const auto signature = DownloadMemory(openreplay::FromUtf8(signature_url), 4096, error);
+        if (!signature || !openreplay::VerifyUpdateSignature(*manifest, *signature)) {
+            result.error = signature ? L"Release metadata signature is invalid" : std::move(error);
+            return result;
+        }
+        const std::string json(reinterpret_cast<const char*>(manifest->data()), manifest->size());
+        auto parsed = openreplay::ParseUpdateManifest(json);
+        if (!parsed) {
+            result.error = L"Release metadata is invalid";
+            return result;
+        }
+        result.ok = true;
+        result.manifest = std::move(*parsed);
+        result.update_available = openreplay::IsValidUpdate(
+            result.manifest, openreplay::kVersion, developer ? "dev" : "stable");
         return result;
+    };
+
+    auto stable = check_channel(false);
+    if (!developer_channel) return stable;
+    auto developer = check_channel(true);
+    if (stable.update_available &&
+        (!developer.update_available || openreplay::IsStableReleasePreferred(
+                                            stable.manifest.version, developer.manifest.version))) {
+        return stable;
     }
-    const auto signature = DownloadMemory(openreplay::FromUtf8(signature_url), 4096, error);
-    if (!signature || !openreplay::VerifyUpdateSignature(*manifest, *signature)) {
-        result.error = signature ? L"Release metadata signature is invalid" : std::move(error);
-        return result;
-    }
-    const std::string json(reinterpret_cast<const char*>(manifest->data()), manifest->size());
-    const auto parsed = openreplay::ParseUpdateManifest(json);
-    if (!parsed) {
-        result.error = L"Release metadata is invalid";
-        return result;
-    }
-    result.ok = true;
-    result.manifest = *parsed;
-    result.update_available = openreplay::IsValidUpdate(
-        result.manifest, openreplay::kVersion, developer_channel ? "dev" : "stable");
-    return result;
+    if (developer.update_available) return developer;
+    if (stable.ok) return stable;
+    return developer;
 }
 
 UpdateDownloadResult UpdateService::Download(const UpdateManifest& manifest, bool developer_channel) const {

@@ -180,6 +180,13 @@ std::optional<SemanticVersion> ParseSemanticVersion(std::string_view value) noex
     return result;
 }
 
+bool IsStableReleasePreferred(std::string_view stable_version,
+                              std::string_view developer_version) noexcept {
+    const auto stable = ParseSemanticVersion(stable_version);
+    const auto developer = ParseSemanticVersion(developer_version);
+    return stable && developer && *stable >= *developer;
+}
+
 std::optional<UpdateManifest> ParseUpdateManifest(std::string_view json) {
     UpdateManifest result;
     const auto schema = JsonInteger<std::uint32_t>(json, "schema");

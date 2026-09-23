@@ -2334,8 +2334,8 @@ void MainWindow::UpdateUpdateUi() {
     }
     const auto developer_channel = developer_updates_toggle_.IsOn();
     update_status_text_.Text(developer_channel
-        ? (english_ ? L"Developer updates are checked in the background."
-                    : L"Dev-обновления проверяются в фоне.")
+        ? (english_ ? L"Stable and developer updates are checked in the background."
+                    : L"Стабильные и dev-обновления проверяются в фоне.")
         : (english_ ? L"Stable updates are checked in the background."
                     : L"Стабильные обновления проверяются в фоне."));
     update_action_button_.Visibility(Visibility::Collapsed);
@@ -2383,8 +2383,8 @@ void MainWindow::CompleteUpdateCheck(openreplay::ui::UpdateCheckResult result, b
         UpdateUpdateUi();
         if (manual) {
             update_status_text_.Text(developer_channel
-                ? (english_ ? L"You are using the latest developer version."
-                            : L"Установлена последняя dev-версия.")
+                ? (english_ ? L"You are using the latest available version."
+                            : L"Установлена последняя доступная версия.")
                 : (english_ ? L"You are using the latest stable version."
                             : L"Установлена последняя стабильная версия."));
         }

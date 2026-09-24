@@ -19,13 +19,13 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.head_branch == 'main')
+       github.event.workflow_run.head_branch == 'dev')
     runs-on: windows-2025
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || 'main' }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || 'refs/heads/dev' }}
           fetch-depth: 0
       - name: Resolve dev version
         id: version
@@ -34,7 +34,7 @@ jobs:
           $header = '.\src\Shared\include\openreplay\Version.h'
           $source = Get-Content -LiteralPath $header -Raw
           if ($source -notmatch 'kReleaseChannel\{"dev"\}') {
-            throw 'Version.h must use the dev release channel on main.'
+            throw 'Version.h must use the dev release channel on the dev branch.'
           }
           if ($source -notmatch 'kVersion\{"(?<version>\d+\.\d+\.\d+)"\}') {
             throw 'Version.h must contain a semantic base version.'
@@ -44,11 +44,12 @@ jobs:
           $source = $source.Replace("kVersion{`"$baseVersion`"}", "kVersion{`"$version`"}")
           [IO.File]::WriteAllText((Resolve-Path $header), $source, [Text.UTF8Encoding]::new($false))
           "version=$version" >> $env:GITHUB_OUTPUT
+          "commit=$(git rev-parse HEAD)" >> $env:GITHUB_OUTPUT
       - name: Prepare release notes
         shell: powershell
         run: |
           .\scripts\get-changelog-section.ps1 -Version Unreleased -Output .\release-notes.md
-          Add-Content -LiteralPath .\release-notes.md -Value "`nBuild: ${{ steps.version.outputs.version }}`nCommit: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}"
+          Add-Content -LiteralPath .\release-notes.md -Value "`nBuild: ${{ steps.version.outputs.version }}`nCommit: ${{ steps.version.outputs.commit }}"
       - name: Build and test Release
         shell: powershell
         run: .\scripts\build.ps1 Release
@@ -90,7 +91,7 @@ jobs:
             gh release delete dev --repo '${{ github.repository }}' --cleanup-tag --yes
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
-          git tag --force dev '${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}'
+          git tag --force dev '${{ steps.version.outputs.commit }}'
           git push origin refs/tags/dev --force
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $version = '${{ steps.version.outputs.version }}'

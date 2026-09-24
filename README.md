@@ -29,7 +29,10 @@ OpenReplay is a Windows desktop recorder focused on a resilient instant replay b
 
 ## Download
 
-Download either the Windows x64 installer or portable ZIP from the [latest stable release](https://github.com/G4F-Elite/OpenReplay/releases/latest). An automatically refreshed [development prerelease](https://github.com/G4F-Elite/OpenReplay/releases/tag/dev) is also available for testing upcoming changes. The per-user installer does not require administrator access and adds Start menu/uninstall entries. For portable use, extract the ZIP into a writable folder and run `OpenReplay.App.exe`. OBS Studio is not required in either mode.
+- **Stable (`main`):** download the Windows x64 installer or portable ZIP from the [latest stable release](https://github.com/G4F-Elite/OpenReplay/releases/latest).
+- **Dev (`dev`):** download the newest development installer or portable ZIP from the [rolling dev prerelease](https://github.com/G4F-Elite/OpenReplay/releases/tag/dev). Expand **Assets** to download the `.exe` installer or `.zip` portable build. This prerelease refreshes after successful CI on `dev` and does not replace the latest stable release.
+
+The per-user installer does not require administrator access and adds Start menu/uninstall entries. For portable use, extract the ZIP into a writable folder and run `OpenReplay.App.exe`. OBS Studio is not required in either mode.
 
 OpenReplay checks signed stable-release metadata in the background by default. When developer updates are enabled, it checks both signed feeds and keeps stable releases eligible to replace developer prereleases. A downloaded update is applied only after you choose `Restart to update` and capture is idle. The updater verifies the signed manifest and ZIP SHA-256, keeps the previous installation until the new App and Host pass a health check, and rolls back if startup fails.
 

@@ -257,7 +257,8 @@ UpdateCheckResult UpdateService::Check(bool developer_channel) const {
         result.ok = true;
         result.manifest = std::move(*parsed);
         result.update_available = openreplay::IsValidUpdate(
-            result.manifest, openreplay::kVersion, developer ? "dev" : "stable");
+            result.manifest, openreplay::kVersion, developer ? "dev" : "stable",
+            openreplay::kReleaseChannel);
         return result;
     };
 
@@ -277,7 +278,7 @@ UpdateCheckResult UpdateService::Check(bool developer_channel) const {
 UpdateDownloadResult UpdateService::Download(const UpdateManifest& manifest, bool developer_channel) const {
     UpdateDownloadResult result;
     if (!openreplay::IsValidUpdate(manifest, openreplay::kVersion,
-                                   developer_channel ? "dev" : "stable")) {
+                                   developer_channel ? "dev" : "stable", openreplay::kReleaseChannel)) {
         result.error = L"Release metadata is not trusted";
         return result;
     }

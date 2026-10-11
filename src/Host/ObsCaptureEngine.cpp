@@ -318,8 +318,11 @@ bool ObsCaptureEngine::CreateAudioSources(std::string& error) {
             microphone_sources_.push_back(std::move(audio_source));
         }
     }
-    // WASAPI sources are standalone audio inputs. Keep them active so their
-    // capture callbacks run; mixer masks route samples to encoded tracks.
+    // Keep WASAPI sources active so their capture callbacks run, and route them
+    // into OBS's global audio channels so the encoders receive the samples.
+    std::uint32_t channel = 1;
+    for (const auto& source : desktop_audio_sources_) api_.obs_set_output_source(channel++, source->source);
+    for (const auto& source : microphone_sources_) api_.obs_set_output_source(channel++, source->source);
     return true;
 }
 

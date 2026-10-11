@@ -8,6 +8,8 @@ Notable user-facing changes are documented here. Development builds use the
 ### Fixed
 
 - Explicitly hid the main window during background startup after updates.
+- Routed active WASAPI sources through OBS audio channels so replay encoders receive the audio shown by the meters.
+- Allowed an opted-in developer build to replace an installed stable build with the same base version.
 
 ## [0.1.10] - 2026-09-23
 
@@ -36,7 +38,7 @@ Notable user-facing changes are documented here. Development builds use the
 
 ### Fixed
 
-- Kept WASAPI desktop and microphone sources active so clips capture audio instead of silence, and routed them through mixer masks instead of output channels.
+- Kept WASAPI desktop and microphone sources active so clips capture audio, routing them through OBS audio channels and mixer masks.
 - Let OBS select the display-capture method automatically and validated the selected monitor size before initializing video.
 - Shipped `obs-ffmpeg-mux.exe` inside the bundled OBS runtime directory and embedded a host manifest, so installed builds find the runtime and support long paths and per-monitor DPI.
 - Prevented the post-update confirmation from opening an empty standalone window during background startup.

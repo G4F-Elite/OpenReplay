@@ -156,6 +156,9 @@ void UpdateMetadataParsesAndComparesVersions() {
           "valid developer update was rejected");
     Check(!openreplay::IsValidUpdate(developer, openreplay::kVersion, "stable"),
           "developer update was accepted on the stable channel");
+    developer.version = "0.1.10-dev.10";
+    Check(openreplay::IsValidUpdate(developer, "0.1.10", "dev", "stable"),
+          "opted-in developer update was rejected over the matching stable release");
     developer.tag = "unexpected";
     Check(!openreplay::IsValidUpdate(developer, openreplay::kVersion, "dev"),
           "developer update with an unexpected tag was accepted");
@@ -193,6 +196,8 @@ void UpdatesRespectReleasePrecedence() {
                           developer.asset_name;
     Check(!openreplay::IsValidUpdate(developer, "0.1.9", "dev"),
           "developer build replaced its stable release");
+    Check(openreplay::IsValidUpdate(developer, "0.1.9", "dev", "stable"),
+          "developer channel did not replace the installed stable release when opted in");
     developer.version = "0.1.10-dev.1";
     Check(openreplay::IsValidUpdate(developer, "0.1.9", "dev"),
           "newer developer build was not offered after a stable release");

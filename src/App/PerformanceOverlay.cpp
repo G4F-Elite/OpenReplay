@@ -30,11 +30,11 @@ std::uint64_t FileTimeValue(const FILETIME& value) noexcept {
     return converted.QuadPart;
 }
 
-std::wstring MemoryText(std::uint64_t used, std::uint64_t total, bool english) {
+std::wstring MemoryText(std::uint64_t used, std::uint64_t total) {
     constexpr double gibibyte = 1024.0 * 1024.0 * 1024.0;
     wchar_t text[64]{};
-    swprintf_s(text, L"%.1f / %.1f %s", static_cast<double>(used) / gibibyte,
-               static_cast<double>(total) / gibibyte, english ? L"GB" : L"ГБ");
+    swprintf_s(text, L"%.1f / %.1f", static_cast<double>(used) / gibibyte,
+               static_cast<double>(total) / gibibyte);
     return text;
 }
 
@@ -144,7 +144,7 @@ void PerformanceOverlay::ApplySettings(const Settings& settings, bool english) {
     SetLayeredWindowAttributes(window_, 0, alpha, LWA_ALPHA);
     if (visible_) {
         PositionWindow();
-        InvalidateRect(window_, nullptr, TRUE);
+        InvalidateRect(window_, nullptr, FALSE);
     }
 }
 
@@ -488,17 +488,29 @@ void PerformanceOverlay::PositionWindow() {
     const auto area = ForegroundMonitorArea(owner_);
     if (!area.monitor) return;
     const auto dpi = MonitorDpi(area.monitor);
-    const int width = ScaleForDpi(400, dpi);
+    const int width = ScaleForDpi(327, dpi);
     const int graph_height = settings_.performance_show_frametime_graph ? 112 : 0;
-    const int height = ScaleForDpi(68 + EnabledMetricCount() * 27 + graph_height, dpi);
+    const int height = ScaleForDpi(48 + EnabledMetricCount() * 43 + graph_height, dpi);
     const int margin = ScaleForDpi(18, dpi);
     const int x = area.bounds.right - width - margin;
     const int y = settings_.performance_overlay_position == PerformanceOverlayPosition::BottomRight
                       ? area.bounds.bottom - height - margin
                       : area.bounds.top + margin;
-    if (const auto region = CreateRoundRectRgn(0, 0, width + 1, height + 1,
-                                               ScaleForDpi(16, dpi), ScaleForDpi(16, dpi))) {
-        if (!SetWindowRgn(window_, region, TRUE)) DeleteObject(region);
+
+    RECT desired{x, y, x + width, y + height};
+    RECT current{};
+    const bool has_current_bounds = GetWindowRect(window_, &current) != FALSE;
+    const bool same_bounds = has_current_bounds && EqualRect(&current, &desired);
+    const bool same_size = has_current_bounds &&
+                           current.right - current.left == width &&
+                           current.bottom - current.top == height;
+    if (same_bounds) return;
+
+    if (!same_size) {
+        if (const auto region = CreateRoundRectRgn(0, 0, width + 1, height + 1,
+                                                   ScaleForDpi(16, dpi), ScaleForDpi(16, dpi))) {
+            if (!SetWindowRgn(window_, region, TRUE)) DeleteObject(region);
+        }
     }
     SetWindowPos(window_, HWND_TOPMOST, x, y, width, height,
                  SWP_NOACTIVATE | SWP_NOOWNERZORDER | (visible_ ? SWP_SHOWWINDOW : 0));
@@ -507,8 +519,8 @@ void PerformanceOverlay::PositionWindow() {
 void PerformanceOverlay::Paint(HDC dc, const RECT& bounds) {
     const auto dpi = WindowDpi(window_);
     const auto scale = [dpi](int value) { return ScaleForDpi(value, dpi); };
-    const auto background = CreateSolidBrush(RGB(24, 24, 27));
-    const auto accent = CreateSolidBrush(RGB(0, 193, 106));
+    const auto background = CreateSolidBrush(RGB(13, 14, 14));
+    const auto accent = CreateSolidBrush(RGB(118, 185, 0));
     if (background) {
         FillRect(dc, &bounds, background);
         DeleteObject(background);
@@ -531,46 +543,52 @@ void PerformanceOverlay::Paint(HDC dc, const RECT& bounds) {
                                         DEFAULT_PITCH, L"Public Sans");
     const auto old_font = SelectObject(dc, title_font ? title_font : GetStockObject(DEFAULT_GUI_FONT));
     SetTextColor(dc, RGB(255, 255, 255));
-    RECT title{scale(20), scale(13), bounds.right - scale(18), scale(39)};
+    RECT title{scale(16), scale(10), bounds.right - scale(84), scale(34)};
     DrawTextW(dc, english_ ? L"PERFORMANCE" : L"ПРОИЗВОДИТЕЛЬНОСТЬ", -1, &title,
               DT_SINGLELINE | DT_VCENTER);
     SetTextColor(dc, RGB(113, 113, 122));
-    RECT shortcut{bounds.right - scale(90), scale(13), bounds.right - scale(18), scale(39)};
+    RECT shortcut{bounds.right - scale(78), scale(10), bounds.right - scale(16), scale(34)};
     DrawTextW(dc, L"ALT + R", -1, &shortcut, DT_SINGLELINE | DT_RIGHT | DT_VCENTER);
 
-    int y = scale(47);
-    const auto row = [&](std::wstring_view label, const std::wstring& value) {
+    int y = scale(48);
+    const auto row = [&](std::wstring_view label, const std::wstring& value,
+                         std::wstring_view unit = {}) {
         SelectObject(dc, label_font ? label_font : GetStockObject(DEFAULT_GUI_FONT));
         SetTextColor(dc, RGB(161, 161, 170));
-        RECT label_rect{scale(20), y, bounds.right - scale(125), y + scale(24)};
+        RECT label_rect{scale(16), y, bounds.right - scale(150), y + scale(38)};
         DrawTextW(dc, label.data(), static_cast<int>(label.size()), &label_rect, DT_SINGLELINE | DT_VCENTER);
         SelectObject(dc, value_font ? value_font : GetStockObject(DEFAULT_GUI_FONT));
-        SetTextColor(dc, RGB(0, 220, 130));
-        RECT value_rect{bounds.right - scale(170), y, bounds.right - scale(18), y + scale(24)};
+        SetTextColor(dc, RGB(139, 212, 0));
+        RECT value_rect{bounds.right - scale(142), y, bounds.right - scale(46), y + scale(38)};
         DrawTextW(dc, value.c_str(), -1, &value_rect, DT_SINGLELINE | DT_RIGHT | DT_VCENTER | DT_END_ELLIPSIS);
-        y += scale(28);
+        SelectObject(dc, label_font ? label_font : GetStockObject(DEFAULT_GUI_FONT));
+        SetTextColor(dc, RGB(161, 161, 170));
+        RECT unit_rect{bounds.right - scale(42), y, bounds.right - scale(16), y + scale(38)};
+        DrawTextW(dc, unit.data(), static_cast<int>(unit.size()), &unit_rect,
+                  DT_SINGLELINE | DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+        y += scale(43);
     };
     const auto percent = [](const std::optional<unsigned int>& value) {
-        return value ? std::to_wstring(*value) + L"%" : std::wstring{L"--"};
+        return value ? std::to_wstring(*value) : std::wstring{L"--"};
     };
     const auto frame_metric = [](const std::optional<double>& value, std::wstring_view suffix) {
         return value && *value > 0.0 ? Decimal(*value, suffix) : std::wstring{L"--"};
     };
     if (settings_.performance_show_fps) {
-        row(L"FPS", frame_metric(sample_.fps, L""));
+        row(L"FPS", frame_metric(sample_.fps, L""), L"FPS");
     }
     if (settings_.performance_show_fps_lows) {
         const auto lows = sample_.fps_low_1 && sample_.fps_low_01 && *sample_.fps_low_1 > 0.0 &&
                                   *sample_.fps_low_01 > 0.0
                               ? Decimal(*sample_.fps_low_1) + L" / " + Decimal(*sample_.fps_low_01)
                               : std::wstring{L"--"};
-        row(L"1% / 0.1% low", lows);
+        row(L"1% / 0.1% low", lows, L"FPS");
     }
     if (settings_.performance_show_frametime) {
         const auto frame_time = sample_.frame_time_ms && *sample_.frame_time_ms > 0.0
-                                    ? PreciseDecimal(*sample_.frame_time_ms, L" ms")
+                                    ? PreciseDecimal(*sample_.frame_time_ms)
                                     : std::wstring{L"--"};
-        row(english_ ? L"Frame time" : L"Время кадра", frame_time);
+        row(english_ ? L"Frame time" : L"Время кадра", frame_time, L"ms");
     }
     if (settings_.performance_show_frametime_graph) {
         const int graph_left = scale(20);
@@ -658,7 +676,7 @@ void PerformanceOverlay::Paint(HDC dc, const RECT& bounds) {
             SelectObject(dc, previous_brush);
             if (raw_brush) DeleteObject(raw_brush);
 
-            const auto graph_pen = CreatePen(PS_SOLID, scale(2), RGB(0, 220, 130));
+             const auto graph_pen = CreatePen(PS_SOLID, scale(2), RGB(139, 212, 0));
             const auto previous_pen = SelectObject(dc, graph_pen ? graph_pen : GetStockObject(WHITE_PEN));
             Polyline(dc, trend_points.data(), static_cast<int>(trend_points.size()));
             SelectObject(dc, previous_pen);
@@ -679,28 +697,31 @@ void PerformanceOverlay::Paint(HDC dc, const RECT& bounds) {
         }
         y = graph_bottom + scale(15);
     }
-    if (settings_.performance_show_gpu_usage) row(english_ ? L"GPU usage" : L"Загрузка GPU", percent(sample_.gpu_percent));
+    if (settings_.performance_show_gpu_usage) row(english_ ? L"GPU usage" : L"Загрузка GPU", percent(sample_.gpu_percent), L"%");
     if (settings_.performance_show_gpu_temperature) {
         row(english_ ? L"GPU temperature" : L"Температура GPU",
-            sample_.gpu_temperature_c ? std::to_wstring(*sample_.gpu_temperature_c) + L" °C" : L"--");
+            sample_.gpu_temperature_c ? std::to_wstring(*sample_.gpu_temperature_c) : L"--", L"°C");
     }
     if (settings_.performance_show_gpu_clock) {
         row(english_ ? L"GPU clock" : L"Частота GPU",
-            sample_.gpu_clock_mhz ? std::to_wstring(*sample_.gpu_clock_mhz) + L" MHz" : L"--");
+            sample_.gpu_clock_mhz ? std::to_wstring(*sample_.gpu_clock_mhz) : L"--", L"MHz");
     }
     if (settings_.performance_show_gpu_power) {
         row(english_ ? L"GPU power" : L"Потребление GPU",
-            sample_.gpu_power_mw ? Decimal(static_cast<double>(*sample_.gpu_power_mw) / 1000.0, L" W") : L"--");
+            sample_.gpu_power_mw ? Decimal(static_cast<double>(*sample_.gpu_power_mw) / 1000.0, L"") : L"--", L"W");
     }
     if (settings_.performance_show_gpu_memory) {
         row(L"VRAM", sample_.gpu_memory_used && sample_.gpu_memory_total
-                         ? MemoryText(*sample_.gpu_memory_used, *sample_.gpu_memory_total, english_) : L"--");
+                         ? MemoryText(*sample_.gpu_memory_used, *sample_.gpu_memory_total) : L"--",
+            english_ ? L"GB" : L"ГБ");
     }
-    if (settings_.performance_show_cpu_usage) row(english_ ? L"CPU usage" : L"Загрузка CPU", percent(sample_.cpu_percent));
+    if (settings_.performance_show_cpu_usage) row(english_ ? L"CPU usage" : L"Загрузка CPU", percent(sample_.cpu_percent), L"%");
     if (settings_.performance_show_memory) {
+        const bool has_memory_totals = sample_.memory_used && sample_.memory_total;
         row(english_ ? L"System memory" : L"Оперативная память",
-            sample_.memory_used && sample_.memory_total
-                ? MemoryText(*sample_.memory_used, *sample_.memory_total, english_) : percent(sample_.memory_percent));
+            has_memory_totals ? MemoryText(*sample_.memory_used, *sample_.memory_total)
+                              : percent(sample_.memory_percent),
+            has_memory_totals ? (english_ ? L"GB" : L"ГБ") : L"%");
     }
 
     SelectObject(dc, old_font);
@@ -724,7 +745,7 @@ LRESULT CALLBACK PerformanceOverlay::WindowProc(HWND window, UINT message, WPARA
             self->SampleSystemMetrics();
             self->PositionWindow();
         }
-        InvalidateRect(window, nullptr, TRUE);
+        InvalidateRect(window, nullptr, FALSE);
         return 0;
     }
     if (message == WM_PAINT) {
@@ -733,7 +754,24 @@ LRESULT CALLBACK PerformanceOverlay::WindowProc(HWND window, UINT message, WPARA
         if (dc) {
             RECT bounds{};
             GetClientRect(window, &bounds);
-            self->Paint(dc, bounds);
+            const int width = bounds.right - bounds.left;
+            const int height = bounds.bottom - bounds.top;
+            const auto buffer = CreateCompatibleDC(dc);
+            const auto bitmap = buffer && width > 0 && height > 0
+                                    ? CreateCompatibleBitmap(dc, width, height)
+                                    : nullptr;
+            if (buffer && bitmap) {
+                const auto previous_bitmap = SelectObject(buffer, bitmap);
+                self->Paint(buffer, bounds);
+                BitBlt(dc, 0, 0, width, height, buffer, 0, 0, SRCCOPY);
+                SelectObject(buffer, previous_bitmap);
+                DeleteObject(bitmap);
+                DeleteDC(buffer);
+            } else {
+                if (bitmap) DeleteObject(bitmap);
+                if (buffer) DeleteDC(buffer);
+                self->Paint(dc, bounds);
+            }
             EndPaint(window, &paint);
         }
         return 0;

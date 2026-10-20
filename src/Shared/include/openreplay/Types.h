@@ -16,6 +16,26 @@ enum class VideoCodec { H264, Hevc, Av1 };
 enum class QualityPreset { Performance, Balanced, HighQuality, Custom };
 enum class OutputFormat { Mkv, Mp4 };
 enum class PerformanceOverlayPosition { TopRight, BottomRight };
+// Keep the first four values stable: they are persisted in settings.conf.
+enum class FilterPreset { Custom, Crisp, VividHdr, Cinema, Default };
+
+struct VideoFilters {
+    bool enabled{false};
+    // Full-screen preview adds another compositing pass. Keep it opt-in so
+    // recording filters do not unexpectedly reduce game FPS.
+    bool show_in_game{false};
+    FilterPreset preset{FilterPreset::Default};
+    int sharpness{0};
+    int hdr{0};
+    int contrast{0};
+    int saturation{0};
+    int brightness{0};
+    int warmth{0};
+
+    void Normalize() noexcept;
+    void ApplyPreset(FilterPreset value) noexcept;
+    bool operator==(const VideoFilters&) const = default;
+};
 
 struct ReplayHotkey {
     bool enabled{true};
@@ -40,6 +60,7 @@ struct Settings {
     bool developer_updates{false};
     bool discord_auto_send{false};
     bool capture_cursor{true};
+    VideoFilters filters;
     bool microphone_enabled{true};
     std::uint32_t replay_seconds{60};
     std::uint32_t replay_max_megabytes{2048};

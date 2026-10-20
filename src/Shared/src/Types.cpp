@@ -51,7 +51,36 @@ bool AudioDevicesEqual(const std::vector<AudioDeviceConfig>& left,
 
 }  // namespace
 
+void VideoFilters::Normalize() noexcept {
+    // OBS sharpness is a full-frame pass. Keep persisted values bounded so an
+    // old or hand-edited settings file cannot turn it into a permanent GPU
+    // bottleneck.
+    sharpness = std::clamp(sharpness, 0, 25);
+    hdr = std::clamp(hdr, 0, 100);
+    contrast = std::clamp(contrast, -50, 50);
+    saturation = std::clamp(saturation, -100, 100);
+    brightness = std::clamp(brightness, -30, 30);
+    warmth = std::clamp(warmth, -100, 100);
+    if (preset < FilterPreset::Custom || preset > FilterPreset::Default) preset = FilterPreset::Default;
+}
+
+void VideoFilters::ApplyPreset(FilterPreset value) noexcept {
+    const auto in_game = show_in_game;
+    switch (value) {
+    // Sharpness is a full-frame pass. Keep the profiles restrained to avoid
+    // halos and unnecessary GPU work on typical game footage.
+    // Presets intentionally leave sharpness off. It is the most expensive
+    // effect and tends to create halos; users can opt into it manually.
+    case FilterPreset::Crisp: *this = {true, in_game, value, 0, 0, 4, 3, 0, 0}; break;
+    case FilterPreset::VividHdr: *this = {true, in_game, value, 0, 22, 5, 10, 0, 2}; break;
+    case FilterPreset::Cinema: *this = {true, in_game, value, 0, 10, 6, -8, -1, 8}; break;
+    case FilterPreset::Custom: preset = value; break;
+    case FilterPreset::Default: *this = {false, in_game, value, 0, 0, 0, 0, 0, 0}; break;
+    }
+}
+
 void Settings::Normalize() {
+    filters.Normalize();
     replay_seconds = std::clamp(replay_seconds, 15u, 1200u);
     replay_max_megabytes = std::clamp(replay_max_megabytes, 256u, 16384u);
     fps = fps >= 60 ? 60u : 30u;
@@ -247,7 +276,8 @@ bool AudioSourceSettingsEqual(const Settings& left, const Settings& right) noexc
 }
 
 bool CapturePipelineSettingsEqual(const Settings& left, const Settings& right) noexcept {
-    return CapturePipelineCoreSettingsEqual(left, right) && AudioSourceSettingsEqual(left, right);
+    return CapturePipelineCoreSettingsEqual(left, right) && AudioSourceSettingsEqual(left, right) &&
+           left.filters == right.filters;
 }
 
 bool ReplayOutputSettingsEqual(const Settings& left, const Settings& right) {

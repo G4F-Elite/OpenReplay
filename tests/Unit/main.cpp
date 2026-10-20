@@ -41,6 +41,15 @@ void SettingsRoundTrip() {
     settings.developer_updates = true;
     settings.discord_auto_send = true;
     settings.discord_target_megabytes = 25;
+    settings.filters.enabled = true;
+    settings.filters.show_in_game = false;
+    settings.filters.preset = openreplay::FilterPreset::VividHdr;
+    settings.filters.sharpness = 18;
+    settings.filters.hdr = 65;
+    settings.filters.contrast = 12;
+    settings.filters.saturation = 24;
+    settings.filters.brightness = 0;
+    settings.filters.warmth = 4;
     settings.language = "ru-RU";
     settings.monitor_id = "display:1=value";
     settings.output_directory = std::filesystem::temp_directory_path() / L"Open Replay";
@@ -70,6 +79,7 @@ void SettingsRoundTrip() {
     Check(loaded.developer_updates, "developer updates setting did not round-trip");
     Check(loaded.discord_auto_send && loaded.discord_target_megabytes == 25,
           "Discord share settings did not round-trip");
+    Check(loaded.filters == settings.filters, "video filter settings did not round-trip");
     Check(loaded.monitor_id == settings.monitor_id, "escaped setting did not round-trip");
     Check(loaded.output_directory == settings.output_directory, "path setting did not round-trip");
     Check(loaded.replay_seconds == 90, "numeric setting did not round-trip");
@@ -111,6 +121,23 @@ void DefaultSettingsUseEnglishAndMp4() {
     Check(!settings.developer_updates, "developer updates were enabled by default");
     Check(!settings.discord_auto_send && settings.discord_target_megabytes == 8,
           "Discord share defaults were not applied");
+    Check(!settings.filters.enabled && !settings.filters.show_in_game &&
+              settings.filters.preset == openreplay::FilterPreset::Default,
+          "video filter defaults were not applied");
+}
+
+void VideoFilterPresetsHaveDefaults() {
+    openreplay::VideoFilters filters;
+    filters.ApplyPreset(openreplay::FilterPreset::Default);
+    Check(!filters.enabled && filters.sharpness == 0 && filters.hdr == 0 && filters.contrast == 0 &&
+              filters.saturation == 0 && filters.brightness == 0 && filters.warmth == 0,
+          "default video filter preset was not neutral");
+    filters.ApplyPreset(openreplay::FilterPreset::Crisp);
+    Check(filters.enabled && filters.sharpness == 0 && filters.hdr <= 25,
+          "crisp video filter preset was not performance friendly");
+    filters.sharpness = 100;
+    filters.Normalize();
+    Check(filters.sharpness == 25, "sharpness was not capped for performance");
 }
 
 void UpdateMetadataParsesAndComparesVersions() {
@@ -264,6 +291,13 @@ void SettingsChangeClassification() {
           "an encoder bitrate change did not require a capture pipeline reload");
 
     changed = current;
+    changed.filters.enabled = true;
+    Check(!openreplay::CapturePipelineSettingsEqual(current, changed),
+          "video filter changes did not require a capture pipeline reload");
+    Check(openreplay::CapturePipelineCoreSettingsEqual(current, changed),
+          "video filter changes incorrectly changed core capture settings");
+
+    changed = current;
     changed.microphone_devices.front().volume_percent = 75;
     Check(openreplay::CapturePipelineCoreSettingsEqual(current, changed),
           "an audio-only change modified core capture settings");
@@ -344,6 +378,8 @@ void ReplayDurationCommandParses() {
           "lightweight replay output reload command was not parsed");
     Check(openreplay::ParseCommand("reload_audio_sources").type == openreplay::CommandType::ReloadAudioSources,
           "lightweight audio source reload command was not parsed");
+    Check(openreplay::ParseCommand("reload_video_filters").type == openreplay::CommandType::ReloadVideoFilters,
+          "lightweight video filter reload command was not parsed");
 }
 
 void AudioDevicesNormalize() {
@@ -478,6 +514,7 @@ int wmain() {
         StateMachinePreservesIntent();
         SettingsRoundTrip();
         DefaultSettingsUseEnglishAndMp4();
+        VideoFilterPresetsHaveDefaults();
         UpdateMetadataParsesAndComparesVersions();
         UpdatesRespectReleasePrecedence();
         UpdateSignatureFixtureVerifies();

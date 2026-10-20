@@ -25,6 +25,7 @@ struct video_output;
 struct audio_output;
 struct profiler_name_store;
 struct obs_volmeter;
+struct obs_display;
 struct calldata {
     std::uint8_t* stack;
     std::size_t size;
@@ -43,6 +44,18 @@ using video_t = video_output;
 using audio_t = audio_output;
 using profiler_name_store_t = profiler_name_store;
 using obs_volmeter_t = obs_volmeter;
+using obs_display_t = obs_display;
+using DisplayDrawCallback = void (*)(void*, std::uint32_t, std::uint32_t);
+
+// Windows ABI of gs_init_data in the pinned OBS 32 runtime.
+struct ObsDisplayInfo {
+    void* window;
+    std::uint32_t width, height;
+    std::uint32_t backbuffers{2};
+    int format{5}; // GS_BGRA
+    int depth_format{0}; // GS_ZS_NONE
+    std::uint32_t adapter{0};
+};
 using calldata_t = calldata;
 using ObsLogHandler = void (*)(int, const char*, ::va_list, void*);
 using SignalCallback = void (*)(void*, calldata_t*);
@@ -103,15 +116,26 @@ public:
     video_t* (*obs_get_video)(){};
     audio_t* (*obs_get_audio)(){};
     void (*obs_set_output_source)(std::uint32_t, obs_source_t*){};
+    obs_display_t* (*obs_display_create)(const ObsDisplayInfo*, std::uint32_t){};
+    void (*obs_display_destroy)(obs_display_t*){};
+    void (*obs_display_add_draw_callback)(obs_display_t*, DisplayDrawCallback, void*){};
+    void (*obs_display_remove_draw_callback)(obs_display_t*, DisplayDrawCallback, void*){};
+    void (*obs_render_main_texture)(){};
+    void (*gs_ortho)(float, float, float, float, float, float){};
 
     obs_data_t* (*obs_data_create)(){};
     void (*obs_data_release)(obs_data_t*){};
     void (*obs_data_set_string)(obs_data_t*, const char*, const char*){};
     void (*obs_data_set_int)(obs_data_t*, const char*, long long){};
+    void (*obs_data_set_double)(obs_data_t*, const char*, double){};
     void (*obs_data_set_bool)(obs_data_t*, const char*, bool){};
 
     obs_source_t* (*obs_source_create)(const char*, const char*, obs_data_t*, obs_data_t*){};
     void (*obs_source_release)(obs_source_t*){};
+    void (*obs_source_filter_add)(obs_source_t*, obs_source_t*){};
+    void (*obs_source_update)(obs_source_t*, obs_data_t*){};
+    void (*obs_source_set_enabled)(obs_source_t*, bool){};
+    std::uint32_t (*obs_source_get_width)(obs_source_t*){};
     void (*obs_source_inc_active)(obs_source_t*){};
     void (*obs_source_dec_active)(obs_source_t*){};
     void (*obs_source_set_audio_mixers)(obs_source_t*, std::uint32_t){};

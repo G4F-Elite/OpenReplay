@@ -75,6 +75,7 @@ Command ParseCommand(std::string_view value) {
     if (value == "screenshot") return {CommandType::Screenshot};
     if (value == "reload_settings") return {CommandType::ReloadSettings};
     if (value == "reload_audio_sources") return {CommandType::ReloadAudioSources};
+    if (value == "reload_video_filters") return {CommandType::ReloadVideoFilters};
     if (value == "reload_replay_outputs") return {CommandType::ReloadReplayOutputs};
     if (value == "shutdown") return {CommandType::Shutdown};
     if (value == "replay:on") return {CommandType::SetReplayEnabled, true};

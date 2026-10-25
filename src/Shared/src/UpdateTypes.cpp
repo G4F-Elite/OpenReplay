@@ -230,11 +230,20 @@ bool IsValidUpdate(const UpdateManifest& manifest, std::string_view current_vers
               std::string_view{manifest.tag}.substr(1) == expected_tag;
     const auto expected_asset_url = "https://github.com/G4F-Elite/OpenReplay/releases/download/" +
                                     manifest.tag + '/' + manifest.asset_name;
-    const bool newer = current && available &&
-        (*available > *current ||
-         (channel == "dev" && installed_channel == "stable" && !available->pre_release.empty() &&
-          available->major == current->major && available->minor == current->minor &&
-          available->patch == current->patch));
+    bool newer = false;
+    if (current && available) {
+        if (channel == "stable" && installed_channel == "dev") {
+            // A stable release with the same base version is not newer than its dev builds.
+            auto current_base = *current;
+            current_base.pre_release.clear();
+            newer = *available > current_base;
+        } else {
+            newer = *available > *current ||
+                (channel == "dev" && installed_channel == "stable" && !available->pre_release.empty() &&
+                 available->major == current->major && available->minor == current->minor &&
+                 available->patch == current->patch);
+        }
+    }
     return current && available && manifest.schema == 1 && manifest.product == "OpenReplay" &&
            (channel == "stable" || channel == "dev") && manifest.channel == channel &&
            valid_tag && manifest.architecture == "x64" && manifest.asset_size > 0 &&

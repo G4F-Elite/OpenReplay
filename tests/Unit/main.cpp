@@ -168,6 +168,26 @@ void UpdateMetadataParsesAndComparesVersions() {
     Check(manifest.has_value(), "update manifest was not parsed");
     Check(openreplay::IsValidUpdate(*manifest, openreplay::kVersion, "stable"),
           "valid stable update was rejected");
+
+    auto same_base_stable = *manifest;
+    same_base_stable.version = "0.1.10";
+    same_base_stable.tag = "v0.1.10";
+    same_base_stable.asset_name = "OpenReplay-0.1.10-win-x64.zip";
+    same_base_stable.asset_url =
+        "https://github.com/G4F-Elite/OpenReplay/releases/download/v0.1.10/" +
+        same_base_stable.asset_name;
+    Check(!openreplay::IsValidUpdate(same_base_stable, "0.1.10-dev.25", "stable", "dev"),
+          "same-base stable release was offered over a developer build");
+
+    auto newer_stable = same_base_stable;
+    newer_stable.version = "0.1.11";
+    newer_stable.tag = "v0.1.11";
+    newer_stable.asset_name = "OpenReplay-0.1.11-win-x64.zip";
+    newer_stable.asset_url =
+        "https://github.com/G4F-Elite/OpenReplay/releases/download/v0.1.11/" +
+        newer_stable.asset_name;
+    Check(openreplay::IsValidUpdate(newer_stable, "0.1.10-dev.25", "stable", "dev"),
+          "newer stable base release was rejected for a developer build");
     auto invalid = *manifest;
     invalid.asset_url = "https://example.com/update.zip";
     Check(!openreplay::IsValidUpdate(invalid, openreplay::kVersion, "stable"),

@@ -8,6 +8,7 @@ Notable user-facing changes are documented here. Development builds use the
 ### Fixed
 
 - Added NVIDIA-style video filters for recordings and replays: sharpness, HDR look, color grading, presets, and optional borderless in-game preview.
+- Kept the overlay window hidden unless it is explicitly shown, so background startup cannot leave a blank window that only Alt+Z dismisses.
 - Explicitly hid the main window during background startup after updates.
 - Routed active WASAPI sources through OBS audio channels so replay encoders receive the audio shown by the meters.
 - Allowed an opted-in developer build to replace an installed stable build with the same base version.

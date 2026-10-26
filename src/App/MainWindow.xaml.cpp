@@ -1606,6 +1606,7 @@ void MainWindow::ShowOnLaunch() {
     const auto window_handle = GetWindowHandle();
     const bool desktop = openreplay::ui::ForegroundMonitorArea(window_handle).desktop;
     if (visible_ || !PositionOverlayWindow()) return;
+    visible_ = true;
     Microsoft::UI::Xaml::Window window = *this;
     if (desktop) {
         window.AppWindow().Show(false);
@@ -1615,7 +1616,6 @@ void MainWindow::ShowOnLaunch() {
         SetForegroundWindow(window_handle);
         SettingsButton().Focus(FocusState::Programmatic);
     }
-    visible_ = true;
     PollStatus();
 }
 
@@ -1624,10 +1624,10 @@ void MainWindow::ShowOverlay() {
     const auto window = GetWindowHandle();
     const bool desktop = openreplay::ui::ForegroundMonitorArea(window).desktop;
     if (!PositionOverlayWindow()) return;
+    visible_ = true;
     if (desktop) {
         Microsoft::UI::Xaml::Window xaml_window = *this;
         xaml_window.AppWindow().Show(false);
-        visible_ = true;
         PollStatus();
         return;
     }
@@ -1637,17 +1637,17 @@ void MainWindow::ShowOverlay() {
     SetForegroundWindow(window);
     SetActiveWindow(window);
     SettingsButton().Focus(FocusState::Programmatic);
-    visible_ = true;
     PollStatus();
 }
 
 void MainWindow::HideOverlay() {
     if (clip_library_window_owner_) clip_library_window_owner_->HideWindow();
-    if (!visible_) return;
-    if (!AnimateWindow(GetWindowHandle(), 130, AW_HIDE | AW_SLIDE | AW_HOR_NEGATIVE)) {
-        ShowWindow(GetWindowHandle(), SW_HIDE);
-    }
+    const auto window = GetWindowHandle();
+    const bool showing = IsWindowVisible(window) != FALSE;
     visible_ = false;
+    if (!showing || !AnimateWindow(window, 130, AW_HIDE | AW_SLIDE | AW_HOR_NEGATIVE)) {
+        ShowWindow(window, SW_HIDE);
+    }
 }
 
 void MainWindow::SetClipFullscreen(bool fullscreen) {
@@ -1655,8 +1655,8 @@ void MainWindow::SetClipFullscreen(bool fullscreen) {
         clip_fullscreen_hid_overlay_ = visible_;
         clip_fullscreen_hid_performance_ = performance_overlay_.Visible();
         if (visible_) {
-            ShowWindow(GetWindowHandle(), SW_HIDE);
             visible_ = false;
+            ShowWindow(GetWindowHandle(), SW_HIDE);
         }
         if (clip_fullscreen_hid_performance_) performance_overlay_.Toggle(settings_, english_);
         return;
@@ -1666,8 +1666,8 @@ void MainWindow::SetClipFullscreen(bool fullscreen) {
         performance_overlay_.Toggle(settings_, english_);
     }
     if (clip_fullscreen_hid_overlay_ && !visible_ && PositionOverlayWindow()) {
-        ShowWindow(GetWindowHandle(), SW_SHOWNOACTIVATE);
         visible_ = true;
+        ShowWindow(GetWindowHandle(), SW_SHOWNOACTIVATE);
         PollStatus();
     }
     clip_fullscreen_hid_overlay_ = false;
@@ -3985,6 +3985,11 @@ void MainWindow::ExitApplication() {
 LRESULT CALLBACK MainWindow::WindowSubclass(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
                                              UINT_PTR, DWORD_PTR context) {
     auto* self = reinterpret_cast<MainWindow*>(context);
+    // WinUI can re-show the main window after a background launch hid it.
+    if (message == WM_SHOWWINDOW && wparam && !self->visible_ && !self->exiting_) {
+        ShowWindow(window, SW_HIDE);
+        return 0;
+    }
     if (message == WM_HOTKEY && wparam == kOverlayHotkey) {
         self->ToggleOverlay();
         return 0;

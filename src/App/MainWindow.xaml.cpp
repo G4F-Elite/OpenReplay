@@ -1259,26 +1259,43 @@ void MainWindow::BuildUi() {
     update_status_text_.Margin(Thickness{0, 3, 0, 0});
     update_copy.Children().Append(update_status_text_);
     update_row.Children().Append(update_copy);
-    StackPanel update_actions;
-    update_actions.Spacing(6);
-    update_actions.VerticalAlignment(VerticalAlignment::Center);
     check_update_button_ = controls.ActionButton(L"Check now");
-    check_update_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
+    check_update_button_.VerticalAlignment(VerticalAlignment::Center);
     check_update_button_.Click({this, &MainWindow::CheckUpdate_Click});
-    update_actions.Children().Append(check_update_button_);
-    update_action_button_ = controls.ActionButton(L"Download update", ButtonKind::Accent);
-    update_action_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
-    update_action_button_.Visibility(Visibility::Collapsed);
+    Grid::SetColumn(check_update_button_, 1);
+    update_row.Children().Append(check_update_button_);
+    updates_section.Children().Append(group_row(update_row, Thickness{16, 12, 16, 12}));
+
+    // A found update gets its own card, so its actions sit side by side instead of stacking beside the status.
+    update_card_ = Border{};
+    update_card_.Background(theme.inset);
+    update_card_.BorderBrush(theme.border);
+    update_card_.BorderThickness(Thickness{1, 1, 1, 1});
+    update_card_.CornerRadius(CornerRadius{10, 10, 10, 10});
+    update_card_.Padding(Thickness{16, 12, 16, 14});
+    update_card_.Margin(Thickness{16, 0, 16, 12});
+    update_card_.Visibility(Visibility::Collapsed);
+    StackPanel update_card_content;
+    update_card_title_ = Text(L"", 13.5, primary_text_brush);
+    update_card_title_.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
+    update_card_content.Children().Append(update_card_title_);
+    update_card_detail_ = Text(L"", 12, muted_brush);
+    update_card_detail_.TextWrapping(TextWrapping::Wrap);
+    update_card_detail_.Margin(Thickness{0, 3, 0, 0});
+    update_card_content.Children().Append(update_card_detail_);
+    StackPanel update_actions;
+    update_actions.Orientation(Orientation::Horizontal);
+    update_actions.Spacing(8);
+    update_actions.Margin(Thickness{0, 12, 0, 0});
+    update_action_button_ = controls.ActionButton(L"Download", ButtonKind::Accent);
     update_action_button_.Click({this, &MainWindow::UpdateAction_Click});
     update_actions.Children().Append(update_action_button_);
     release_notes_button_ = controls.ActionButton(L"Release notes");
-    release_notes_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
-    release_notes_button_.Visibility(Visibility::Collapsed);
     release_notes_button_.Click({this, &MainWindow::OpenReleaseNotes_Click});
     update_actions.Children().Append(release_notes_button_);
-    Grid::SetColumn(update_actions, 1);
-    update_row.Children().Append(update_actions);
-    updates_section.Children().Append(group_row(update_row, Thickness{16, 12, 16, 12}));
+    update_card_content.Children().Append(update_actions);
+    update_card_.Child(update_card_content);
+    updates_section.Children().Append(update_card_);
 
     settings_scroll.Content(form);
     settings_panel_.Children().Append(settings_scroll);
@@ -2636,53 +2653,39 @@ void MainWindow::PollStatus() {
 }
 
 void MainWindow::UpdateUpdateUi() {
-    if (!update_version_text_ || !update_status_text_ || !update_action_button_) return;
+    if (!update_version_text_ || !update_status_text_ || !update_card_) return;
     update_version_text_.Text(L"OpenReplay " + openreplay::FromUtf8(openreplay::kVersion) +
                                (openreplay::kReleaseChannel == "dev"
                                     ? (english_ ? L" · Dev" : L" · Dev-канал")
                                     : (english_ ? L" · Stable" : L" · Стабильный канал")));
-    check_update_button_.IsEnabled(!update_check_in_flight_ && !update_download_in_flight_);
-    developer_updates_toggle_.IsEnabled(!update_check_in_flight_ && !update_download_in_flight_);
-    if (update_download_in_flight_) {
-        update_status_text_.Text(english_ ? L"Downloading and verifying update..."
-                                          : L"Загрузка и проверка обновления...");
-        update_action_button_.Visibility(Visibility::Collapsed);
-        release_notes_button_.Visibility(Visibility::Visible);
+    const bool busy = update_check_in_flight_ || update_download_in_flight_;
+    check_update_button_.IsEnabled(!busy);
+    developer_updates_toggle_.IsEnabled(!busy);
+    update_status_text_.Text(update_check_in_flight_
+        ? (english_ ? L"Checking signed release metadata..." : L"Проверка подписанных данных релиза...")
+        : developer_updates_toggle_.IsOn()
+            ? (english_ ? L"Stable and developer updates are checked in the background."
+                        : L"Стабильные и dev-обновления проверяются в фоне.")
+            : (english_ ? L"Stable updates are checked in the background."
+                        : L"Стабильные обновления проверяются в фоне."));
+
+    if (available_update_.version.empty()) {
+        update_card_.Visibility(Visibility::Collapsed);
         return;
     }
-    if (update_check_in_flight_) {
-        update_status_text_.Text(english_ ? L"Checking signed release metadata..."
-                                          : L"Проверка подписанных данных релиза...");
-        update_action_button_.Visibility(Visibility::Collapsed);
-        return;
-    }
-    if (!downloaded_update_.empty()) {
-        update_status_text_.Text(english_ ? L"Update " + openreplay::FromUtf8(available_update_.version) +
-                                               L" is ready. Restart when capture is idle."
-                                          : L"Обновление " + openreplay::FromUtf8(available_update_.version) +
-                                               L" готово. Перезапустите после завершения захвата.");
-        update_action_button_.Content(winrt::box_value(english_ ? L"Restart to update" : L"Перезапустить"));
-        update_action_button_.Visibility(Visibility::Visible);
-        release_notes_button_.Visibility(Visibility::Visible);
-        return;
-    }
-    if (!available_update_.version.empty()) {
-        update_status_text_.Text(english_ ? L"Version " + openreplay::FromUtf8(available_update_.version) +
-                                               L" is available."
-                                          : L"Доступна версия " + openreplay::FromUtf8(available_update_.version) + L".");
-        update_action_button_.Content(winrt::box_value(english_ ? L"Download update" : L"Скачать"));
-        update_action_button_.Visibility(Visibility::Visible);
-        release_notes_button_.Visibility(Visibility::Visible);
-        return;
-    }
-    const auto developer_channel = developer_updates_toggle_.IsOn();
-    update_status_text_.Text(developer_channel
-        ? (english_ ? L"Stable and developer updates are checked in the background."
-                    : L"Стабильные и dev-обновления проверяются в фоне.")
-        : (english_ ? L"Stable updates are checked in the background."
-                    : L"Стабильные обновления проверяются в фоне."));
-    update_action_button_.Visibility(Visibility::Collapsed);
-    release_notes_button_.Visibility(Visibility::Collapsed);
+    const auto version = openreplay::FromUtf8(available_update_.version);
+    const bool ready = !downloaded_update_.empty();
+    update_card_title_.Text(ready ? (english_ ? L"Update " + version + L" is ready" : L"Обновление " + version + L" готово")
+                                  : (english_ ? L"Version " + version + L" is available" : L"Доступна версия " + version));
+    update_card_detail_.Text(update_download_in_flight_
+        ? (english_ ? L"Downloading and verifying the update..." : L"Загрузка и проверка обновления...")
+        : ready ? (english_ ? L"Restart OpenReplay when capture is idle." : L"Перезапустите OpenReplay, когда захват не идёт.")
+                : (english_ ? L"It downloads in the background and is verified before install."
+                            : L"Скачивается в фоне и проверяется перед установкой."));
+    update_action_button_.Content(winrt::box_value(ready ? (english_ ? L"Restart to update" : L"Перезапустить")
+                                                         : (english_ ? L"Download" : L"Скачать")));
+    update_action_button_.Visibility(busy ? Visibility::Collapsed : Visibility::Visible);
+    update_card_.Visibility(Visibility::Visible);
 }
 
 winrt::fire_and_forget MainWindow::CheckForUpdatesAsync(bool manual, bool automatic_download) {
@@ -4361,10 +4364,11 @@ void MainWindow::ExitApplication() {
 LRESULT CALLBACK MainWindow::WindowSubclass(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
                                              UINT_PTR, DWORD_PTR context) {
     auto* self = reinterpret_cast<MainWindow*>(context);
-    // WinUI can re-show the main window after a background launch hid it.
-    if (message == WM_SHOWWINDOW && wparam && !self->visible_ && !self->exiting_) {
-        ShowWindow(window, SW_HIDE);
-        return 0;
+    // WinUI or the launcher's show command can show the main window after a background launch hid it.
+    // Hiding it from WM_SHOWWINDOW does not work: that message arrives before the show, which then goes
+    // through anyway. Dropping the show flag here stops every path.
+    if (message == WM_WINDOWPOSCHANGING && !self->visible_ && !self->exiting_) {
+        reinterpret_cast<WINDOWPOS*>(lparam)->flags &= ~SWP_SHOWWINDOW;
     }
     // Once the panel takes focus from a fullscreen game, the system pushes it into the work area,
     // beside a taskbar the game still covers. Keep it where PositionOverlayWindow put it.

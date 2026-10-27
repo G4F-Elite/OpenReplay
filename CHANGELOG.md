@@ -5,6 +5,14 @@ Notable user-facing changes are documented here. Development builds use the
 
 ## [Unreleased]
 
+### Changed
+
+- Showed a found update in its own card in Settings, with the download and release-notes buttons side by side.
+
+### Fixed
+
+- Stopped a blank window from appearing after OpenReplay starts in the background, which only Alt+Z could dismiss.
+
 ## [0.2.0] - 2026-10-27
 
 ### Added

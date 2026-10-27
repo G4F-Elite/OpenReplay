@@ -466,6 +466,9 @@ private:
     Microsoft::UI::Xaml::Controls::TextBlock developer_updates_label_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock update_version_text_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock update_status_text_{nullptr};
+    Microsoft::UI::Xaml::Controls::Border update_card_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock update_card_title_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock update_card_detail_{nullptr};
     Microsoft::UI::Xaml::Controls::ToggleSwitch automatic_updates_toggle_{nullptr};
     Microsoft::UI::Xaml::Controls::ToggleSwitch developer_updates_toggle_{nullptr};
     Microsoft::UI::Xaml::Controls::Button check_update_button_{nullptr};

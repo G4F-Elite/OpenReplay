@@ -142,7 +142,9 @@ void VideoFilterPresetsHaveDefaults() {
 }
 
 void UpdateMetadataParsesAndComparesVersions() {
-    const auto current = openreplay::ParseSemanticVersion(openreplay::kVersion);
+    // Pinned rather than kVersion, which reaches the "newer" versions below once a release ships them.
+    constexpr std::string_view installed{"0.1.10"};
+    const auto current = openreplay::ParseSemanticVersion(installed);
     const auto newer = openreplay::ParseSemanticVersion("v0.2.0");
     const auto prerelease = openreplay::ParseSemanticVersion("0.2.0-dev.10");
     const auto older_prerelease = openreplay::ParseSemanticVersion("0.2.0-dev.9");
@@ -167,7 +169,7 @@ void UpdateMetadataParsesAndComparesVersions() {
         "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     })");
     Check(manifest.has_value(), "update manifest was not parsed");
-    Check(openreplay::IsValidUpdate(*manifest, openreplay::kVersion, "stable"),
+    Check(openreplay::IsValidUpdate(*manifest, installed, "stable"),
           "valid stable update was rejected");
 
     auto same_base_stable = *manifest;
@@ -191,7 +193,7 @@ void UpdateMetadataParsesAndComparesVersions() {
           "newer stable base release was rejected for a developer build");
     auto invalid = *manifest;
     invalid.asset_url = "https://example.com/update.zip";
-    Check(!openreplay::IsValidUpdate(invalid, openreplay::kVersion, "stable"),
+    Check(!openreplay::IsValidUpdate(invalid, installed, "stable"),
           "untrusted update URL was accepted");
 
     auto developer = *manifest;
@@ -200,19 +202,19 @@ void UpdateMetadataParsesAndComparesVersions() {
     developer.tag = "dev";
     developer.asset_url = "https://github.com/G4F-Elite/OpenReplay/releases/download/dev/" +
                           developer.asset_name;
-    Check(openreplay::IsValidUpdate(developer, openreplay::kVersion, "dev"),
+    Check(openreplay::IsValidUpdate(developer, installed, "dev"),
           "valid developer update was rejected");
-    Check(!openreplay::IsValidUpdate(developer, openreplay::kVersion, "stable"),
+    Check(!openreplay::IsValidUpdate(developer, installed, "stable"),
           "developer update was accepted on the stable channel");
     developer.version = "0.1.10-dev.10";
     Check(openreplay::IsValidUpdate(developer, "0.1.10", "dev", "stable"),
           "opted-in developer update was rejected over the matching stable release");
     developer.tag = "unexpected";
-    Check(!openreplay::IsValidUpdate(developer, openreplay::kVersion, "dev"),
+    Check(!openreplay::IsValidUpdate(developer, installed, "dev"),
           "developer update with an unexpected tag was accepted");
     developer.tag = "dev";
     developer.asset_url += ".other";
-    Check(!openreplay::IsValidUpdate(developer, openreplay::kVersion, "dev"),
+    Check(!openreplay::IsValidUpdate(developer, installed, "dev"),
           "developer update with a mismatched asset URL was accepted");
 }
 

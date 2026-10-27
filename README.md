@@ -8,6 +8,14 @@ See [CHANGELOG.md](CHANGELOG.md) for release and development-build changes.
 
 OpenReplay is a Windows desktop recorder focused on a resilient instant replay buffer, direct recording, and screenshots. The `Alt+Z` overlay runs separately from capture so closing the UI cannot silently disable replay.
 
+<p align="center">
+  <img src=".github/screenshots/clips.png" alt="Clip library with the player and Discord copy" width="100%">
+</p>
+<p align="center">
+  <img src=".github/screenshots/panel.png" alt="Alt+Z panel with the replay buffer and recent clips" width="49%">
+  <img src=".github/screenshots/settings.png" alt="Settings" width="49%">
+</p>
+
 ## MVP
 
 - Windows 10 22H2 and Windows 11, x64

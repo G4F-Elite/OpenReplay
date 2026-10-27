@@ -165,6 +165,8 @@ Settings SettingsStore::Load() const {
         values, "performance_show_frametime", result.performance_show_frametime);
     result.performance_show_frametime_graph = ParseBool(
         values, "performance_show_frametime_graph", result.performance_show_frametime_graph);
+    result.performance_frametime_line = ParseBool(
+        values, "performance_frametime_line", result.performance_frametime_line);
     result.performance_show_gpu_usage = ParseBool(
         values, "performance_show_gpu_usage", result.performance_show_gpu_usage);
     result.performance_show_gpu_temperature = ParseBool(
@@ -256,6 +258,7 @@ void SettingsStore::Save(const Settings& input) const {
                << "performance_show_fps_lows=" << (settings.performance_show_fps_lows ? "true" : "false") << '\n'
                << "performance_show_frametime=" << (settings.performance_show_frametime ? "true" : "false") << '\n'
                << "performance_show_frametime_graph=" << (settings.performance_show_frametime_graph ? "true" : "false") << '\n'
+               << "performance_frametime_line=" << (settings.performance_frametime_line ? "true" : "false") << '\n'
                << "performance_show_gpu_usage=" << (settings.performance_show_gpu_usage ? "true" : "false") << '\n'
                << "performance_show_gpu_temperature=" << (settings.performance_show_gpu_temperature ? "true" : "false") << '\n'
                << "performance_show_gpu_clock=" << (settings.performance_show_gpu_clock ? "true" : "false") << '\n'

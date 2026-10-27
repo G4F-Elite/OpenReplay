@@ -77,6 +77,8 @@ private:
         bool animating{false};
         bool hiding{false};
         bool hide_timer_started{false};
+        bool rounded_by_dwm{false};
+        UINT dpi{};
         int start_x{};
         int start_y{};
         int target_x{};
@@ -117,6 +119,14 @@ private:
     void SetClipFullscreen(bool fullscreen);
     void ToggleOverlay();
     void ShowSettings(bool show);
+    void UpdateNavTabs();
+    void UpdateBufferUi(const std::string& state);
+    void UpdateDashboardMeta();
+    void UpdateDashboardShortcuts();
+    void RefreshRecentClips();
+    winrt::fire_and_forget LoadRecentThumbnailAsync(std::filesystem::path path,
+                                                    Microsoft::UI::Xaml::Controls::Image image,
+                                                    std::uint64_t generation);
     void ShowClipLibrary();
     void LoadSettingsIntoControls();
     void EnumerateMonitors();
@@ -203,19 +213,14 @@ private:
     Microsoft::UI::Xaml::Controls::TextBlock SettingsButtonText() const { return settings_button_text_; }
     Microsoft::UI::Xaml::Controls::Grid DashboardPanel() const { return dashboard_panel_; }
     Microsoft::UI::Xaml::Controls::Grid SettingsPanel() const { return settings_panel_; }
-    Microsoft::UI::Xaml::Controls::TextBlock DashboardTitle() const { return dashboard_title_; }
-    Microsoft::UI::Xaml::Controls::TextBlock DashboardSubtitle() const { return dashboard_subtitle_; }
     Microsoft::UI::Xaml::Controls::TextBlock ReplayTitle() const { return replay_title_; }
     Microsoft::UI::Xaml::Controls::TextBlock ReplayDescription() const { return replay_description_; }
     Microsoft::UI::Xaml::Controls::TextBlock ReplayStateText() const { return replay_state_text_; }
     Microsoft::UI::Xaml::Controls::TextBlock RecordingTitle() const { return recording_title_; }
-    Microsoft::UI::Xaml::Controls::TextBlock RecordingDescription() const { return recording_description_; }
     Microsoft::UI::Xaml::Controls::TextBlock RecordingStateText() const { return recording_state_text_; }
     Microsoft::UI::Xaml::Controls::TextBlock ScreenshotTitle() const { return screenshot_title_; }
-    Microsoft::UI::Xaml::Controls::TextBlock ScreenshotDescription() const { return screenshot_description_; }
     Microsoft::UI::Xaml::Controls::TextBlock ScreenshotStateText() const { return screenshot_state_text_; }
     Microsoft::UI::Xaml::Controls::TextBlock SettingsTitle() const { return settings_title_; }
-    Microsoft::UI::Xaml::Controls::TextBlock SettingsSubtitle() const { return settings_subtitle_; }
     Microsoft::UI::Xaml::Controls::TextBlock MonitorLabel() const { return monitor_label_; }
     Microsoft::UI::Xaml::Controls::TextBlock DesktopAudioLabel() const { return desktop_audio_label_; }
     Microsoft::UI::Xaml::Controls::TextBlock MicrophoneDevicesLabel() const { return microphone_devices_label_; }
@@ -282,6 +287,14 @@ private:
     std::uint64_t replay_save_revision_{0};
     std::chrono::steady_clock::time_point last_host_launch_attempt_{};
     std::chrono::steady_clock::time_point last_storage_update_{};
+    std::chrono::steady_clock::time_point replay_running_since_{};
+    RECT overlay_bounds_{};
+    std::wstring free_space_summary_;
+    HWND last_external_window_{nullptr};
+    std::wstring replay_game_;
+    std::string last_replay_state_;
+    Microsoft::UI::Xaml::Media::SolidColorBrush track_brush_{nullptr};
+    std::uint64_t recent_clips_generation_{0};
     std::chrono::steady_clock::time_point last_audio_device_scan_{};
     std::chrono::steady_clock::time_point audio_device_missing_since_{};
     std::string last_pipeline_error_;
@@ -324,19 +337,14 @@ private:
     Microsoft::UI::Xaml::Controls::Button open_folder_button_{nullptr};
     Microsoft::UI::Xaml::Controls::Button open_logs_button_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock settings_button_text_{nullptr};
-    Microsoft::UI::Xaml::Controls::TextBlock dashboard_title_{nullptr};
-    Microsoft::UI::Xaml::Controls::TextBlock dashboard_subtitle_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock replay_title_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock replay_description_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock replay_state_text_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock recording_title_{nullptr};
-    Microsoft::UI::Xaml::Controls::TextBlock recording_description_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock recording_state_text_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock screenshot_title_{nullptr};
-    Microsoft::UI::Xaml::Controls::TextBlock screenshot_description_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock screenshot_state_text_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock settings_title_{nullptr};
-    Microsoft::UI::Xaml::Controls::TextBlock settings_subtitle_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock source_section_title_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock video_section_title_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock input_section_title_{nullptr};
@@ -398,6 +406,24 @@ private:
     Microsoft::UI::Xaml::Controls::TextBlock performance_overlay_label_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock performance_overlay_summary_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock performance_position_label_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock performance_graph_style_label_{nullptr};
+    Microsoft::UI::Xaml::Controls::ComboBox performance_graph_style_selector_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock buffer_value_text_{nullptr};
+    Microsoft::UI::Xaml::Documents::Run buffer_filled_run_{nullptr};
+    Microsoft::UI::Xaml::Documents::Run buffer_total_run_{nullptr};
+    Microsoft::UI::Xaml::Controls::Grid buffer_segments_{nullptr};
+    std::vector<Microsoft::UI::Xaml::Controls::Border> buffer_segment_cells_;
+    Microsoft::UI::Xaml::Controls::TextBlock buffer_start_label_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock buffer_middle_label_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock buffer_now_label_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock dashboard_meta_text_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock save_replay_text_{nullptr};
+    Microsoft::UI::Xaml::Controls::StackPanel save_replay_keys_{nullptr};
+    Microsoft::UI::Xaml::Controls::StackPanel recording_keys_{nullptr};
+    Microsoft::UI::Xaml::Controls::StackPanel screenshot_keys_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock recent_title_{nullptr};
+    Microsoft::UI::Xaml::Controls::Button recent_all_button_{nullptr};
+    Microsoft::UI::Xaml::Controls::StackPanel recent_clips_panel_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock performance_opacity_label_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock performance_opacity_value_{nullptr};
     Microsoft::UI::Xaml::Controls::ComboBox performance_position_selector_{nullptr};

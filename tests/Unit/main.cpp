@@ -59,6 +59,7 @@ void SettingsRoundTrip() {
     settings.performance_overlay_position = openreplay::PerformanceOverlayPosition::BottomRight;
     settings.performance_show_fps_lows = false;
     settings.performance_show_frametime_graph = false;
+    settings.performance_frametime_line = true;
     settings.performance_show_gpu_temperature = false;
     settings.performance_show_gpu_clock = false;
     settings.performance_show_gpu_power = false;
@@ -90,7 +91,7 @@ void SettingsRoundTrip() {
     Check(!loaded.performance_show_fps_lows && !loaded.performance_show_frametime_graph &&
               !loaded.performance_show_gpu_temperature && !loaded.performance_show_gpu_clock &&
               !loaded.performance_show_gpu_power && !loaded.performance_show_memory &&
-              loaded.performance_overlay_opacity == 78,
+              loaded.performance_overlay_opacity == 78 && loaded.performance_frametime_line,
            "performance overlay settings did not round-trip");
     Check(loaded.desktop_audio_devices == settings.desktop_audio_devices, "desktop audio devices did not round-trip");
     Check(loaded.microphone_devices == settings.microphone_devices, "microphone devices did not round-trip");
@@ -515,6 +516,18 @@ void ReplaySizeEstimateIncludesEncodedAudioAndOverhead() {
           "replay size estimate did not include all encoded tracks and overhead");
 }
 
+void GameNamesRoundTripThroughClipFiles() {
+    Check(openreplay::GameFileName(L"  ELDEN RING\u2122: Shadow / Erdtree?  ") == L"ELDEN RING Shadow Erdtree",
+          "game title was not made safe for a file name");
+    Check(openreplay::GameFileName(L"\u2122 ...").empty(), "game title of only symbols left a file name");
+    Check(openreplay::ClipGameName(L"C:/Clips/Dota 2_2026-10-27_16-48-15_Replay_15s.mp4") == L"Dota 2",
+          "game name was not read back from a replay");
+    Check(openreplay::ClipGameName(L"Dota 2_2026-10-27_16-48-15_Replay_15s-discord.mp4") == L"Dota 2",
+          "game name was not read back from a Discord copy");
+    Check(openreplay::ClipGameName(L"OpenReplay_2026-10-27_16-48-15_Replay_15s.mp4").empty(),
+          "a clip without a game got one");
+}
+
 void DiscordBitrateTargetsConfiguredSize() {
     const auto bitrate = openreplay::DiscordVideoBitrate(std::chrono::seconds{15}, 8);
     Check(bitrate >= 3900000 && bitrate <= 4100000,
@@ -553,6 +566,7 @@ int wmain() {
         QualityPresetsApplyEncoderLevels();
         ReplaySizeEstimateIncludesEncodedAudioAndOverhead();
         DiscordBitrateTargetsConfiguredSize();
+        GameNamesRoundTripThroughClipFiles();
         std::cout << "OpenReplay unit tests passed\n";
         return 0;
     } catch (const std::exception& error) {

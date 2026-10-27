@@ -9,14 +9,25 @@ struct ClipLibraryWindow : ClipLibraryWindowT<ClipLibraryWindow> {
     ClipLibraryWindow();
 
     void Configure(std::filesystem::path output_directory, bool english, bool webhook_available,
-                   HWND overlay_window,
+                   std::uint32_t share_limit_megabytes, HWND overlay_window,
                    std::function<void(std::filesystem::path, bool)> share_callback,
                    std::function<void(bool)> fullscreen_callback);
     void ActivateWindow();
+    [[nodiscard]] bool IsShown();
     void HideWindow();
     void Shutdown();
+    // Refreshes the list and selects a freshly exported Discord copy.
+    void ShowSharedCopy(const std::filesystem::path& path);
 
 private:
+    struct ClipVisual {
+        std::filesystem::path path;
+        Microsoft::UI::Xaml::Controls::Image image{nullptr};
+        Microsoft::UI::Xaml::Controls::TextBlock badge{nullptr};
+        Microsoft::UI::Xaml::Controls::TextBlock detail{nullptr};
+        bool compact{false};
+    };
+
     void BuildUi();
     void Window_Closing(Microsoft::UI::Windowing::AppWindow const&,
                         Microsoft::UI::Windowing::AppWindowClosingEventArgs const& args);
@@ -33,6 +44,8 @@ private:
     void ResetSelection();
     void UpdateSelectionStyles();
     void SelectClip(const std::filesystem::path& path);
+    void UpdateCopyHint();
+    void CopySelectedFile();
     winrt::fire_and_forget OpenClipAsync(std::filesystem::path path);
     void TogglePlayback();
     void ShowPlaybackFeedback(bool playing);
@@ -42,15 +55,11 @@ private:
     void OpenSelectedClip();
     winrt::fire_and_forget DeleteSelectedClipAsync();
     void ShareSelectedClip(bool webhook);
-    winrt::fire_and_forget LoadClipVisualsAsync(
-        std::filesystem::path path,
-        Microsoft::UI::Xaml::Controls::Image image,
-        Microsoft::UI::Xaml::Controls::TextBlock metadata,
-        Microsoft::UI::Xaml::Controls::TextBlock quality,
-        std::uint64_t generation);
+    winrt::fire_and_forget LoadClipVisualsAsync(std::vector<ClipVisual> visuals, std::uint64_t generation);
 
     bool english_{true};
     bool webhook_available_{false};
+    std::uint32_t share_limit_megabytes_{8};
     bool closing_for_exit_{false};
     bool expanded_{false};
     std::filesystem::path output_directory_;
@@ -70,6 +79,12 @@ private:
     Microsoft::UI::Xaml::Controls::TextBlock empty_text_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock selected_title_{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock selected_metadata_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock selected_file_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock copy_label_{nullptr};
+    Microsoft::UI::Xaml::Controls::TextBlock copy_hint_{nullptr};
+    Microsoft::UI::Xaml::Controls::Grid info_row_{nullptr};
+    Microsoft::UI::Xaml::Controls::Button file_copy_button_{nullptr};
+    Microsoft::UI::Xaml::Controls::FontIcon file_copy_icon_{nullptr};
     Microsoft::UI::Xaml::Controls::Grid header_{nullptr};
     Microsoft::UI::Xaml::Controls::Grid content_{nullptr};
     Microsoft::UI::Xaml::Controls::Grid player_column_{nullptr};

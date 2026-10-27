@@ -22,6 +22,28 @@ constexpr int kNvmlTemperatureGpu = 0;
 constexpr int kNvmlClockGraphics = 0;
 constexpr UINT kFrameRefreshMilliseconds = 100;
 constexpr unsigned int kSystemRefreshTicks = 5;
+constexpr int kMaxTopmostRaises = 3;
+// Overlay layout in 96-DPI pixels; Paint and ContentHeight must agree.
+constexpr int kOverlayWidth = 360;
+constexpr int kOverlayPadding = 16;
+constexpr int kOverlayHeader = 22;
+constexpr int kStatusGap = 16;
+constexpr int kStatusHeight = 44;
+constexpr int kGraphGap = 14;
+constexpr int kGraphHeight = 30;
+constexpr int kCaptionGap = 5;
+constexpr int kCaptionHeight = 14;
+constexpr int kSectionHeight = 30;
+constexpr int kRowHeight = 38;
+// The frame-time graph is a fixed time window, so it scrolls at the same speed at any frame rate.
+// 1.2 s keeps a 60 FPS frame several pixels wide, since bar width is the frame's duration.
+constexpr auto kGraphWindow = std::chrono::milliseconds{1200};
+// 60 FPS is the target: slower frames turn yellow, below 30 FPS red. The slack absorbs timing jitter at 60.
+constexpr double kWarnFrameMs = 1000.0 / 57.0;
+constexpr double kBadFrameMs = 1000.0 / 30.0;
+// The right edge trails real time by more than the sampling interval, so new frames slide in instead of popping.
+constexpr auto kGraphDelay = std::chrono::milliseconds{160};
+constexpr UINT kAnimationMilliseconds = 15;
 
 std::uint64_t FileTimeValue(const FILETIME& value) noexcept {
     ULARGE_INTEGER converted{};
@@ -120,6 +142,7 @@ bool PerformanceOverlay::Initialize(HWND owner) {
 void PerformanceOverlay::Shutdown() noexcept {
     if (window_) {
         KillTimer(window_, kRefreshTimer);
+        KillTimer(window_, kAnimationTimer);
         DestroyWindow(window_);
         window_ = nullptr;
     }
@@ -363,6 +386,35 @@ void PerformanceOverlay::SampleFrameMetrics() {
         }
     }
     if (const auto error = fields.find("error"); error != fields.end()) sample_.frame_error = error->second;
+
+    // Rebuild absolute end times from the newest frame backwards and keep only frames not seen yet.
+    // The newest frame's present is a system-wide QPC tick, so every sample lands on the same timeline.
+    using SteadyDuration = std::chrono::steady_clock::duration;
+    const auto to_duration = [](double milliseconds) {
+        return std::chrono::duration_cast<SteadyDuration>(std::chrono::duration<double, std::milli>{milliseconds});
+    };
+    LARGE_INTEGER counter{};
+    LARGE_INTEGER frequency{};
+    QueryPerformanceCounter(&counter);
+    QueryPerformanceFrequency(&frequency);
+    const auto now = std::chrono::steady_clock::now();
+    const auto present = metric("present").value_or(0.0);
+    const auto age_ms = present > 0.0 && frequency.QuadPart > 0
+        ? std::max(0.0, (static_cast<double>(counter.QuadPart) - present) * 1000.0 /
+                            static_cast<double>(frequency.QuadPart))
+        : 0.0;
+    const auto newest = frame_history_.empty() ? std::chrono::steady_clock::time_point{} : frame_history_.back().end;
+    auto end = now - to_duration(age_ms);
+    std::vector<FrameMark> fresh;
+    for (auto frame = sample_.frame_times.rbegin(); frame != sample_.frame_times.rend(); ++frame) {
+        const auto duration = to_duration(*frame);
+        if (end <= newest + duration / 2) break;
+        fresh.push_back({end, *frame});
+        end -= duration;
+    }
+    frame_history_.insert(frame_history_.end(), fresh.rbegin(), fresh.rend());
+    const auto cutoff = now - kGraphWindow - std::chrono::seconds{1};
+    std::erase_if(frame_history_, [cutoff](const FrameMark& frame) { return frame.end < cutoff; });
     if (sample_.fps && *sample_.fps > 0.0) sample_.frame_error.clear();
 }
 
@@ -455,32 +507,37 @@ void PerformanceOverlay::Show() {
         ShowWindow(window_, SW_SHOWNOACTIVATE);
     }
     SetTimer(window_, kRefreshTimer, kFrameRefreshMilliseconds, nullptr);
+    SetTimer(window_, kAnimationTimer, kAnimationMilliseconds, nullptr);
     visible_ = true;
 }
 
 void PerformanceOverlay::Hide() {
     if (!window_ || !visible_) return;
     KillTimer(window_, kRefreshTimer);
+    KillTimer(window_, kAnimationTimer);
     static_cast<void>(TelemetryCommand("pause"));
     telemetry_target_process_ = 0;
     telemetry_pending_process_ = 0;
     sample_.frame_times.clear();
+    frame_history_.clear();
+    graph_scale_ms_ = 0.0;
     if (!telemetry_process_) telemetry_launch_attempted_ = false;
     if (!AnimateWindow(window_, 130, AW_HIDE | AW_SLIDE | AW_HOR_POSITIVE)) ShowWindow(window_, SW_HIDE);
     visible_ = false;
 }
 
-int PerformanceOverlay::EnabledMetricCount() const noexcept {
-    return static_cast<int>(settings_.performance_show_fps) +
-           static_cast<int>(settings_.performance_show_fps_lows) +
-           static_cast<int>(settings_.performance_show_frametime) +
-           static_cast<int>(settings_.performance_show_gpu_usage) +
-           static_cast<int>(settings_.performance_show_gpu_temperature) +
-           static_cast<int>(settings_.performance_show_gpu_clock) +
-           static_cast<int>(settings_.performance_show_gpu_power) +
-           static_cast<int>(settings_.performance_show_gpu_memory) +
-           static_cast<int>(settings_.performance_show_cpu_usage) +
-           static_cast<int>(settings_.performance_show_memory);
+int PerformanceOverlay::ContentHeight() const noexcept {
+    const auto& s = settings_;
+    const int gpu_rows = s.performance_show_gpu_usage + s.performance_show_gpu_temperature +
+                         s.performance_show_gpu_clock + s.performance_show_gpu_power + s.performance_show_gpu_memory;
+    const int system_rows = s.performance_show_cpu_usage + s.performance_show_memory;
+    int height = kOverlayPadding + kOverlayHeader;
+    if (s.performance_show_fps || s.performance_show_fps_lows) height += kStatusGap + kStatusHeight;
+    if (s.performance_show_frametime_graph) height += kGraphGap + kGraphHeight;
+    if (s.performance_show_frametime_graph || s.performance_show_frametime) height += kCaptionGap + kCaptionHeight;
+    if (gpu_rows) height += kSectionHeight + gpu_rows * kRowHeight;
+    if (system_rows) height += kSectionHeight + system_rows * kRowHeight;
+    return height + kOverlayPadding;
 }
 
 void PerformanceOverlay::PositionWindow() {
@@ -488,9 +545,8 @@ void PerformanceOverlay::PositionWindow() {
     const auto area = ForegroundMonitorArea(owner_);
     if (!area.monitor) return;
     const auto dpi = MonitorDpi(area.monitor);
-    const int width = ScaleForDpi(327, dpi);
-    const int graph_height = settings_.performance_show_frametime_graph ? 112 : 0;
-    const int height = ScaleForDpi(48 + EnabledMetricCount() * 43 + graph_height, dpi);
+    const int width = ScaleForDpi(kOverlayWidth, dpi);
+    const int height = ScaleForDpi(ContentHeight(), dpi);
     const int margin = ScaleForDpi(18, dpi);
     const int x = area.bounds.right - width - margin;
     const int y = settings_.performance_overlay_position == PerformanceOverlayPosition::BottomRight
@@ -508,7 +564,7 @@ void PerformanceOverlay::PositionWindow() {
 
     if (!same_size) {
         if (const auto region = CreateRoundRectRgn(0, 0, width + 1, height + 1,
-                                                   ScaleForDpi(16, dpi), ScaleForDpi(16, dpi))) {
+                                                   ScaleForDpi(24, dpi), ScaleForDpi(24, dpi))) {
             if (!SetWindowRgn(window_, region, TRUE)) DeleteObject(region);
         }
     }
@@ -519,215 +575,281 @@ void PerformanceOverlay::PositionWindow() {
 void PerformanceOverlay::Paint(HDC dc, const RECT& bounds) {
     const auto dpi = WindowDpi(window_);
     const auto scale = [dpi](int value) { return ScaleForDpi(value, dpi); };
-    const auto background = CreateSolidBrush(RGB(13, 14, 14));
-    const auto accent = CreateSolidBrush(RGB(118, 185, 0));
-    if (background) {
-        FillRect(dc, &bounds, background);
-        DeleteObject(background);
-    }
-    if (accent) {
-        RECT indicator{0, 0, scale(5), bounds.bottom};
-        FillRect(dc, &indicator, accent);
-        DeleteObject(accent);
-    }
+    const auto fill = [dc](RECT rect, COLORREF color) {
+        if (const auto brush = CreateSolidBrush(color)) {
+            FillRect(dc, &rect, brush);
+            DeleteObject(brush);
+        }
+    };
+    const auto make_font = [&](int size, int weight, const wchar_t* face = L"Public Sans") {
+        return CreateFontW(-scale(size), 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                           OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, face);
+    };
+    const auto title_font = make_font(13, FW_SEMIBOLD);
+    const auto big_font = make_font(40, FW_SEMIBOLD);
+    const auto big_light_font = make_font(40, FW_LIGHT);
+    const auto small_font = make_font(12, FW_NORMAL);
+    const auto caption_font = make_font(10, FW_NORMAL);
+    const auto label_font = make_font(13, FW_NORMAL);
+    const auto value_font = make_font(13, FW_MEDIUM);
+    const auto unit_font = make_font(11, FW_NORMAL);
+    const auto key_font = make_font(10, FW_NORMAL, L"Cascadia Mono");
+    const std::array fonts{title_font, big_font, big_light_font, small_font, caption_font,
+                           label_font, value_font, unit_font, key_font};
+    const auto old_font = SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT));
+    const auto use = [dc](HFONT font) { SelectObject(dc, font ? font : GetStockObject(DEFAULT_GUI_FONT)); };
+    const auto text = [&](HFONT font, COLORREF color, std::wstring_view value, RECT rect, UINT format) {
+        use(font);
+        SetTextColor(dc, color);
+        DrawTextW(dc, value.data(), static_cast<int>(value.size()), &rect, format | DT_SINGLELINE | DT_NOPREFIX);
+    };
+    const auto text_width = [&](HFONT font, std::wstring_view value) {
+        use(font);
+        SIZE size{};
+        GetTextExtentPoint32W(dc, value.data(), static_cast<int>(value.size()), &size);
+        return static_cast<int>(size.cx);
+    };
+    const auto descent = [&](HFONT font) {
+        use(font);
+        TEXTMETRICW metrics{};
+        GetTextMetricsW(dc, &metrics);
+        return static_cast<int>(metrics.tmDescent);
+    };
 
+    constexpr COLORREF background = RGB(14, 14, 15);
+    constexpr COLORREF line = RGB(31, 31, 34);
+    constexpr COLORREF primary = RGB(237, 237, 237);
+    constexpr COLORREF secondary = RGB(161, 161, 170);
+    constexpr COLORREF muted = RGB(124, 124, 130);
+    constexpr COLORREF faint = RGB(85, 85, 91);
+    constexpr COLORREF accent = RGB(118, 185, 0);
+    constexpr COLORREF value_green = RGB(139, 212, 0);
+    fill(bounds, background);
     SetBkMode(dc, TRANSPARENT);
-    const auto title_font = CreateFontW(-scale(16), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                                        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                                        DEFAULT_PITCH, L"Public Sans");
-    const auto label_font = CreateFontW(-scale(13), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                                        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                                        DEFAULT_PITCH, L"Public Sans");
-    const auto value_font = CreateFontW(-scale(13), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                                        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                                        DEFAULT_PITCH, L"Public Sans");
-    const auto old_font = SelectObject(dc, title_font ? title_font : GetStockObject(DEFAULT_GUI_FONT));
-    SetTextColor(dc, RGB(255, 255, 255));
-    RECT title{scale(16), scale(10), bounds.right - scale(84), scale(34)};
-    DrawTextW(dc, english_ ? L"PERFORMANCE" : L"ПРОИЗВОДИТЕЛЬНОСТЬ", -1, &title,
-              DT_SINGLELINE | DT_VCENTER);
-    SetTextColor(dc, RGB(113, 113, 122));
-    RECT shortcut{bounds.right - scale(78), scale(10), bounds.right - scale(16), scale(34)};
-    DrawTextW(dc, L"ALT + R", -1, &shortcut, DT_SINGLELINE | DT_RIGHT | DT_VCENTER);
+    const int left = scale(18);
+    const int right = bounds.right - scale(18);
 
-    int y = scale(48);
-    const auto row = [&](std::wstring_view label, const std::wstring& value,
-                         std::wstring_view unit = {}) {
-        SelectObject(dc, label_font ? label_font : GetStockObject(DEFAULT_GUI_FONT));
-        SetTextColor(dc, RGB(161, 161, 170));
-        RECT label_rect{scale(16), y, bounds.right - scale(150), y + scale(38)};
-        DrawTextW(dc, label.data(), static_cast<int>(label.size()), &label_rect, DT_SINGLELINE | DT_VCENTER);
-        SelectObject(dc, value_font ? value_font : GetStockObject(DEFAULT_GUI_FONT));
-        SetTextColor(dc, RGB(139, 212, 0));
-        RECT value_rect{bounds.right - scale(142), y, bounds.right - scale(46), y + scale(38)};
-        DrawTextW(dc, value.c_str(), -1, &value_rect, DT_SINGLELINE | DT_RIGHT | DT_VCENTER | DT_END_ELLIPSIS);
-        SelectObject(dc, label_font ? label_font : GetStockObject(DEFAULT_GUI_FONT));
-        SetTextColor(dc, RGB(161, 161, 170));
-        RECT unit_rect{bounds.right - scale(42), y, bounds.right - scale(16), y + scale(38)};
-        DrawTextW(dc, unit.data(), static_cast<int>(unit.size()), &unit_rect,
-                  DT_SINGLELINE | DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
-        y += scale(43);
+    const auto border_pen = CreatePen(PS_SOLID, 1, line);
+    const auto previous_pen = SelectObject(dc, border_pen ? border_pen : GetStockObject(NULL_PEN));
+    const auto previous_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    RoundRect(dc, 0, 0, bounds.right, bounds.bottom, scale(24), scale(24));
+
+    int y = scale(kOverlayPadding);
+    const int header_bottom = y + scale(kOverlayHeader);
+    const int mark_top = y + (scale(kOverlayHeader) - scale(7)) / 2;
+    fill({left, mark_top, left + scale(7), mark_top + scale(7)}, accent);
+    text(title_font, primary, english_ ? L"Performance" : L"Производительность",
+         {left + scale(15), y, right - scale(70), header_bottom}, DT_LEFT | DT_VCENTER);
+
+    // Keycaps for the fixed toggle shortcut, laid out right to left.
+    const auto key_pen = CreatePen(PS_SOLID, 1, RGB(46, 46, 51));
+    SelectObject(dc, key_pen ? key_pen : GetStockObject(NULL_PEN));
+    int key_right = right;
+    for (const std::wstring_view key : {std::wstring_view{L"R"}, std::wstring_view{L"Alt"}}) {
+        const int key_width = std::max(scale(22), text_width(key_font, key) + scale(10));
+        RECT cap{key_right - key_width, y + scale(2), key_right, header_bottom - scale(1)};
+        RoundRect(dc, cap.left, cap.top, cap.right, cap.bottom, scale(10), scale(10));
+        text(key_font, RGB(196, 196, 200), key, cap, DT_CENTER | DT_VCENTER);
+        key_right -= key_width + scale(3);
+    }
+    SelectObject(dc, previous_pen);
+    SelectObject(dc, previous_brush);
+    if (key_pen) DeleteObject(key_pen);
+    if (border_pen) DeleteObject(border_pen);
+    y = header_bottom;
+
+    if (settings_.performance_show_fps || settings_.performance_show_fps_lows) {
+        y += scale(kStatusGap);
+        const int baseline = y + scale(kStatusHeight) - descent(big_font);
+        int x = left;
+        if (settings_.performance_show_fps) {
+            const auto fps = sample_.fps && *sample_.fps > 0.0 ? std::to_wstring(std::lround(*sample_.fps))
+                                                                 : std::wstring{L"--"};
+            text(big_font, primary, fps, {x, y, right, y + scale(kStatusHeight)}, DT_LEFT | DT_BOTTOM);
+            x += text_width(big_font, fps);
+            text(big_light_font, primary, L" FPS", {x, y, right, y + scale(kStatusHeight)}, DT_LEFT | DT_BOTTOM);
+            x += text_width(big_light_font, L" FPS") + scale(10);
+        }
+        if (settings_.performance_show_fps_lows) {
+            const auto low = [](const std::optional<double>& value) {
+                return value && *value > 0.0 ? Decimal(*value) : std::wstring{L"--"};
+            };
+            const auto lows = L"1% " + low(sample_.fps_low_1) + L" · 0.1% " + low(sample_.fps_low_01);
+            text(small_font, muted, lows, {x, y, right, baseline + descent(small_font)}, DT_LEFT | DT_BOTTOM);
+        }
+        y += scale(kStatusHeight);
+    }
+
+    double graph_top_ms = 40.0;
+    if (settings_.performance_show_frametime_graph) {
+        y += scale(kGraphGap);
+        const RECT graph{left, y, right, y + scale(kGraphHeight)};
+        using SteadyClock = std::chrono::steady_clock;
+        const auto to_duration = [](double milliseconds) {
+            return std::chrono::duration_cast<SteadyClock::duration>(std::chrono::duration<double, std::milli>{milliseconds});
+        };
+        const auto right_time = SteadyClock::now() - kGraphDelay;
+        const auto left_time = right_time - kGraphWindow;
+        // Positions snap to a pixel grid pinned to absolute time, so a frame keeps its width while it scrolls.
+        const auto ms_per_pixel = std::chrono::duration<double, std::milli>(kGraphWindow).count() /
+                                  static_cast<double>(std::max(1L, graph.right - graph.left));
+        const auto pixel = [ms_per_pixel](SteadyClock::time_point time) {
+            return static_cast<long long>(std::floor(
+                std::chrono::duration<double, std::milli>(time.time_since_epoch()).count() / ms_per_pixel));
+        };
+        const auto left_pixel = pixel(left_time);
+        const auto x_at = [&](SteadyClock::time_point time) {
+            return static_cast<int>(graph.left + pixel(time) - left_pixel);
+        };
+
+        if (settings_.performance_frametime_line) {
+            double target_top = 10.0;
+            for (const auto& frame : frame_history_) {
+                if (frame.end >= left_time) target_top = std::max(target_top, std::ceil(frame.milliseconds * 1.15 / 10.0) * 10.0);
+            }
+            // Eased so a spike entering or leaving the window does not make the whole line jump.
+            graph_scale_ms_ = graph_scale_ms_ <= 0.0 ? target_top : graph_scale_ms_ + (target_top - graph_scale_ms_) * 0.12;
+            graph_top_ms = graph_scale_ms_;
+        }
+        const auto bar_height = [&](double ms) {
+            return std::max(scale(2), static_cast<int>(std::lround(
+                std::clamp(ms / graph_top_ms, 0.0, 1.0) * (graph.bottom - graph.top))));
+        };
+
+        if (settings_.performance_frametime_line) fill(graph, RGB(20, 20, 22));
+        const auto saved = SaveDC(dc);
+        IntersectClipRect(dc, graph.left, graph.top, graph.right, graph.bottom);
+        if (!settings_.performance_frametime_line) {
+            // One bar per frame: its width is the frame's duration, its height grows only slightly with it.
+            const int graph_height = graph.bottom - graph.top;
+            for (const auto& frame : frame_history_) {
+                const auto start = frame.end - to_duration(frame.milliseconds);
+                if (frame.end < left_time || start > right_time) continue;
+                const int bar_left = x_at(start);
+                const int bar_right = std::max(bar_left + 1, x_at(frame.end) - scale(1));
+                const auto height = static_cast<int>(std::lround(
+                    graph_height * std::clamp(0.3 + frame.milliseconds / 120.0, 0.3, 1.0)));
+                const auto color = frame.milliseconds > kBadFrameMs ? RGB(255, 95, 99)
+                                 : frame.milliseconds > kWarnFrameMs ? RGB(224, 179, 65)
+                                                                     : accent;
+                fill({bar_left, graph.bottom - height, bar_right, graph.bottom}, color);
+            }
+        } else {
+            std::vector<POINT> points;
+            for (const auto& frame : frame_history_) {
+                if (frame.end < left_time - std::chrono::milliseconds{200}) continue;
+                points.push_back({x_at(frame.end), graph.bottom - bar_height(frame.milliseconds)});
+            }
+            if (points.size() >= 2) {
+                auto area = points;
+                area.push_back({points.back().x, graph.bottom});
+                area.push_back({points.front().x, graph.bottom});
+                // Accent at 12% over the overlay background; GDI has no alpha fill.
+                const auto area_brush = CreateSolidBrush(RGB(27, 35, 13));
+                SelectObject(dc, area_brush ? area_brush : GetStockObject(NULL_BRUSH));
+                SelectObject(dc, GetStockObject(NULL_PEN));
+                Polygon(dc, area.data(), static_cast<int>(area.size()));
+                const auto graph_pen = CreatePen(PS_SOLID, scale(2), value_green);
+                SelectObject(dc, graph_pen ? graph_pen : GetStockObject(WHITE_PEN));
+                Polyline(dc, points.data(), static_cast<int>(points.size()));
+                SelectObject(dc, GetStockObject(NULL_BRUSH));
+                SelectObject(dc, GetStockObject(NULL_PEN));
+                if (area_brush) DeleteObject(area_brush);
+                if (graph_pen) DeleteObject(graph_pen);
+            }
+        }
+        RestoreDC(dc, saved);
+        if (frame_history_.empty() && !sample_.frame_error.empty()) {
+            const std::wstring status{sample_.frame_error.begin(), sample_.frame_error.end()};
+            text(caption_font, faint, status, graph, DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS);
+        }
+        y = graph.bottom;
+    }
+
+    if (settings_.performance_show_frametime_graph || settings_.performance_show_frametime) {
+        y += scale(kCaptionGap);
+        const RECT caption{left, y, right, y + scale(kCaptionHeight)};
+        std::wstring frame_time = L"frametime";
+        if (settings_.performance_show_frametime) {
+            frame_time += L" · " + (sample_.frame_time_ms && *sample_.frame_time_ms > 0.0
+                                        ? PreciseDecimal(*sample_.frame_time_ms)
+                                        : std::wstring{L"--"}) + (english_ ? L" ms" : L" мс");
+        }
+        text(caption_font, faint, frame_time, caption, DT_LEFT | DT_VCENTER);
+        if (settings_.performance_show_frametime_graph && settings_.performance_frametime_line) {
+            text(caption_font, faint, std::format(L"0–{:.0f} {}", graph_top_ms, english_ ? L"ms" : L"мс"),
+                 caption, DT_RIGHT | DT_VCENTER);
+        }
+        y = caption.bottom;
+    }
+
+    struct Row {
+        std::wstring_view label;
+        std::wstring value;
+        std::wstring_view unit;
     };
     const auto percent = [](const std::optional<unsigned int>& value) {
         return value ? std::to_wstring(*value) : std::wstring{L"--"};
     };
-    const auto frame_metric = [](const std::optional<double>& value, std::wstring_view suffix) {
-        return value && *value > 0.0 ? Decimal(*value, suffix) : std::wstring{L"--"};
-    };
-    if (settings_.performance_show_fps) {
-        row(L"FPS", frame_metric(sample_.fps, L""), L"FPS");
+    std::vector<Row> gpu_rows;
+    if (settings_.performance_show_gpu_usage) {
+        gpu_rows.push_back({english_ ? L"Usage" : L"Загрузка", percent(sample_.gpu_percent), L"%"});
     }
-    if (settings_.performance_show_fps_lows) {
-        const auto lows = sample_.fps_low_1 && sample_.fps_low_01 && *sample_.fps_low_1 > 0.0 &&
-                                  *sample_.fps_low_01 > 0.0
-                              ? Decimal(*sample_.fps_low_1) + L" / " + Decimal(*sample_.fps_low_01)
-                              : std::wstring{L"--"};
-        row(L"1% / 0.1% low", lows, L"FPS");
-    }
-    if (settings_.performance_show_frametime) {
-        const auto frame_time = sample_.frame_time_ms && *sample_.frame_time_ms > 0.0
-                                    ? PreciseDecimal(*sample_.frame_time_ms)
-                                    : std::wstring{L"--"};
-        row(english_ ? L"Frame time" : L"Время кадра", frame_time, L"ms");
-    }
-    if (settings_.performance_show_frametime_graph) {
-        const int graph_left = scale(20);
-        const int graph_right = bounds.right - scale(18);
-        const int graph_top = y + scale(5);
-        const int graph_bottom = graph_top + scale(82);
-        const int plot_top = graph_top + scale(24);
-        const int plot_bottom = graph_bottom - scale(5);
-        const auto graph_background = CreateSolidBrush(RGB(31, 31, 35));
-        RECT graph_bounds{graph_left, graph_top, graph_right, graph_bottom};
-        if (graph_background) {
-            FillRect(dc, &graph_bounds, graph_background);
-            DeleteObject(graph_background);
-        }
-
-        double graph_min_ms = 0.0;
-        double graph_max_ms = 50.0;
-        if (sample_.frame_times.size() >= 2) {
-            auto sorted = sample_.frame_times;
-            std::ranges::sort(sorted);
-            const auto percentile = [&](double value) {
-                const auto position = value * static_cast<double>(sorted.size() - 1);
-                const auto lower = static_cast<std::size_t>(position);
-                const auto upper = std::min(lower + 1, sorted.size() - 1);
-                const auto fraction = position - static_cast<double>(lower);
-                return sorted[lower] + (sorted[upper] - sorted[lower]) * fraction;
-            };
-            const auto low = percentile(0.05);
-            const auto high = percentile(0.95);
-            const auto padding = std::max(0.5, (high - low) * 0.25);
-            graph_min_ms = std::max(0.0, low - padding);
-            graph_max_ms = high + padding;
-            if (graph_max_ms - graph_min_ms < 2.0) {
-                const auto center = (graph_min_ms + graph_max_ms) * 0.5;
-                graph_min_ms = std::max(0.0, center - 1.0);
-                graph_max_ms = center + 1.0;
-            }
-        }
-        const auto graph_y = [&](double value) {
-            const auto normalized = std::clamp(
-                (value - graph_min_ms) / (graph_max_ms - graph_min_ms), 0.0, 1.0);
-            return plot_bottom - static_cast<int>(std::lround(normalized * (plot_bottom - plot_top)));
-        };
-
-        const auto guide_pen = CreatePen(PS_DOT, 1, RGB(63, 63, 70));
-        const auto old_pen = SelectObject(dc, guide_pen ? guide_pen : GetStockObject(NULL_PEN));
-        for (const auto guide : {graph_min_ms, (graph_min_ms + graph_max_ms) * 0.5, graph_max_ms}) {
-            const auto guide_y = graph_y(guide);
-            MoveToEx(dc, graph_left, guide_y, nullptr);
-            LineTo(dc, graph_right, guide_y);
-        }
-        SelectObject(dc, old_pen);
-        if (guide_pen) DeleteObject(guide_pen);
-
-        if (sample_.frame_times.size() >= 2) {
-            std::vector<POINT> trend_points;
-            trend_points.reserve(sample_.frame_times.size());
-            const auto width = graph_right - graph_left - scale(3);
-            for (std::size_t index = 0; index < sample_.frame_times.size(); ++index) {
-                const auto x = graph_left + scale(1) + static_cast<int>(
-                    index * static_cast<std::size_t>(width) / (sample_.frame_times.size() - 1));
-                double weighted_total = 0.0;
-                double weight_total = 0.0;
-                for (int offset = -2; offset <= 2; ++offset) {
-                    const auto neighbor = static_cast<std::ptrdiff_t>(index) + offset;
-                    if (neighbor < 0 || neighbor >= static_cast<std::ptrdiff_t>(sample_.frame_times.size())) continue;
-                    const auto weight = static_cast<double>(3 - std::abs(offset));
-                    weighted_total += sample_.frame_times[static_cast<std::size_t>(neighbor)] * weight;
-                    weight_total += weight;
-                }
-                trend_points.push_back({x, graph_y(weighted_total / weight_total)});
-            }
-
-            const auto raw_brush = CreateSolidBrush(RGB(63, 120, 92));
-            const auto previous_brush = SelectObject(dc, raw_brush ? raw_brush : GetStockObject(NULL_BRUSH));
-            const auto previous_raw_pen = SelectObject(dc, GetStockObject(NULL_PEN));
-            for (std::size_t index = 0; index < sample_.frame_times.size(); ++index) {
-                const auto x = graph_left + scale(1) + static_cast<int>(
-                    index * static_cast<std::size_t>(width) / (sample_.frame_times.size() - 1));
-                const auto point_y = graph_y(sample_.frame_times[index]);
-                const auto radius = std::max(1, scale(1));
-                Ellipse(dc, x - radius, point_y - radius, x + radius + 1, point_y + radius + 1);
-            }
-            SelectObject(dc, previous_raw_pen);
-            SelectObject(dc, previous_brush);
-            if (raw_brush) DeleteObject(raw_brush);
-
-             const auto graph_pen = CreatePen(PS_SOLID, scale(2), RGB(139, 212, 0));
-            const auto previous_pen = SelectObject(dc, graph_pen ? graph_pen : GetStockObject(WHITE_PEN));
-            Polyline(dc, trend_points.data(), static_cast<int>(trend_points.size()));
-            SelectObject(dc, previous_pen);
-            if (graph_pen) DeleteObject(graph_pen);
-        }
-        SelectObject(dc, label_font ? label_font : GetStockObject(DEFAULT_GUI_FONT));
-        SetTextColor(dc, RGB(113, 113, 122));
-        RECT graph_label{graph_left + scale(7), graph_top + scale(4), graph_right - scale(7), graph_top + scale(22)};
-        const auto graph_text = english_
-                                    ? std::format(L"FRAME TIME · {:.1f}–{:.1f} ms · TREND", graph_min_ms, graph_max_ms)
-                                    : std::format(L"ВРЕМЯ КАДРА · {:.1f}–{:.1f} мс · ТРЕНД", graph_min_ms, graph_max_ms);
-        DrawTextW(dc, graph_text.c_str(), -1, &graph_label, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
-        if (sample_.frame_times.empty() && !sample_.frame_error.empty()) {
-            const std::wstring status{sample_.frame_error.begin(), sample_.frame_error.end()};
-            RECT status_rect{graph_left + scale(7), graph_top + scale(28), graph_right - scale(7), graph_bottom - scale(6)};
-            DrawTextW(dc, status.c_str(), -1, &status_rect,
-                      DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS);
-        }
-        y = graph_bottom + scale(15);
-    }
-    if (settings_.performance_show_gpu_usage) row(english_ ? L"GPU usage" : L"Загрузка GPU", percent(sample_.gpu_percent), L"%");
     if (settings_.performance_show_gpu_temperature) {
-        row(english_ ? L"GPU temperature" : L"Температура GPU",
-            sample_.gpu_temperature_c ? std::to_wstring(*sample_.gpu_temperature_c) : L"--", L"°C");
+        gpu_rows.push_back({english_ ? L"Temperature" : L"Температура",
+                            sample_.gpu_temperature_c ? std::to_wstring(*sample_.gpu_temperature_c) : L"--", L"°C"});
     }
     if (settings_.performance_show_gpu_clock) {
-        row(english_ ? L"GPU clock" : L"Частота GPU",
-            sample_.gpu_clock_mhz ? std::to_wstring(*sample_.gpu_clock_mhz) : L"--", L"MHz");
+        gpu_rows.push_back({english_ ? L"Clock" : L"Частота",
+                            sample_.gpu_clock_mhz ? std::to_wstring(*sample_.gpu_clock_mhz) : L"--",
+                            english_ ? L"MHz" : L"МГц"});
     }
     if (settings_.performance_show_gpu_power) {
-        row(english_ ? L"GPU power" : L"Потребление GPU",
-            sample_.gpu_power_mw ? Decimal(static_cast<double>(*sample_.gpu_power_mw) / 1000.0, L"") : L"--", L"W");
+        gpu_rows.push_back({english_ ? L"Power" : L"Питание",
+                            sample_.gpu_power_mw ? Decimal(static_cast<double>(*sample_.gpu_power_mw) / 1000.0) : L"--",
+                            english_ ? L"W" : L"Вт"});
     }
     if (settings_.performance_show_gpu_memory) {
-        row(L"VRAM", sample_.gpu_memory_used && sample_.gpu_memory_total
-                         ? MemoryText(*sample_.gpu_memory_used, *sample_.gpu_memory_total) : L"--",
-            english_ ? L"GB" : L"ГБ");
+        gpu_rows.push_back({L"VRAM", sample_.gpu_memory_used && sample_.gpu_memory_total
+                                         ? MemoryText(*sample_.gpu_memory_used, *sample_.gpu_memory_total) : L"--",
+                            english_ ? L"GB" : L"ГБ"});
     }
-    if (settings_.performance_show_cpu_usage) row(english_ ? L"CPU usage" : L"Загрузка CPU", percent(sample_.cpu_percent), L"%");
+    std::vector<Row> system_rows;
+    if (settings_.performance_show_cpu_usage) system_rows.push_back({L"CPU", percent(sample_.cpu_percent), L"%"});
     if (settings_.performance_show_memory) {
-        const bool has_memory_totals = sample_.memory_used && sample_.memory_total;
-        row(english_ ? L"System memory" : L"Оперативная память",
-            has_memory_totals ? MemoryText(*sample_.memory_used, *sample_.memory_total)
-                              : percent(sample_.memory_percent),
-            has_memory_totals ? (english_ ? L"GB" : L"ГБ") : L"%");
+        const bool totals = sample_.memory_used && sample_.memory_total;
+        system_rows.push_back({english_ ? L"RAM" : L"ОЗУ",
+                               totals ? MemoryText(*sample_.memory_used, *sample_.memory_total)
+                                      : percent(sample_.memory_percent),
+                               totals ? (english_ ? L"GB" : L"ГБ") : L"%"});
     }
 
+    const auto last_section = system_rows.empty() ? &gpu_rows : &system_rows;
+    const auto section = [&](std::wstring_view title, const std::vector<Row>& rows) {
+        if (rows.empty()) return;
+        SetTextCharacterExtra(dc, scale(1));
+        text(caption_font, faint, title, {left, y + scale(12), right, y + scale(kSectionHeight)}, DT_LEFT | DT_VCENTER);
+        SetTextCharacterExtra(dc, 0);
+        y += scale(kSectionHeight);
+        for (std::size_t index = 0; index < rows.size(); ++index) {
+            const auto& row = rows[index];
+            const RECT rect{left, y, right, y + scale(kRowHeight)};
+            text(label_font, secondary, row.label, rect, DT_LEFT | DT_VCENTER);
+            const int unit_width = text_width(unit_font, row.unit);
+            text(unit_font, muted, row.unit, rect, DT_RIGHT | DT_VCENTER);
+            text(value_font, value_green, row.value, {rect.left, rect.top, rect.right - unit_width - scale(4), rect.bottom},
+                 DT_RIGHT | DT_VCENTER);
+            y = rect.bottom;
+            if (&rows != last_section || index + 1 < rows.size()) fill({0, y - 1, bounds.right, y}, line);
+        }
+    };
+    section(L"GPU", gpu_rows);
+    section(english_ ? L"SYSTEM" : L"СИСТЕМА", system_rows);
+
     SelectObject(dc, old_font);
-    if (title_font) DeleteObject(title_font);
-    if (label_font) DeleteObject(label_font);
-    if (value_font) DeleteObject(value_font);
+    for (const auto font : fonts) {
+        if (font) DeleteObject(font);
+    }
 }
 
 LRESULT CALLBACK PerformanceOverlay::WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -739,6 +861,20 @@ LRESULT CALLBACK PerformanceOverlay::WindowProc(HWND window, UINT message, WPARA
     }
     if (!self) return DefWindowProcW(window, message, wparam, lparam);
     if (message == WM_TIMER && wparam == kRefreshTimer) {
+        // Fullscreen games often make themselves topmost when they get focus; take the top back from them,
+        // but give up on a window that keeps grabbing it back instead of fighting it ten times a second.
+        const auto foreground = GetForegroundWindow();
+        if (foreground != self->topmost_rival_) {
+            self->topmost_rival_ = foreground;
+            self->topmost_raises_ = 0;
+        }
+        for (auto above = GetWindow(window, GW_HWNDPREV);
+             foreground && above && self->topmost_raises_ < kMaxTopmostRaises; above = GetWindow(above, GW_HWNDPREV)) {
+            if (above != foreground) continue;
+            SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+            ++self->topmost_raises_;
+            break;
+        }
         self->SampleFrameMetrics();
         if (++self->refresh_tick_ >= kSystemRefreshTicks) {
             self->refresh_tick_ = 0;
@@ -746,6 +882,10 @@ LRESULT CALLBACK PerformanceOverlay::WindowProc(HWND window, UINT message, WPARA
             self->PositionWindow();
         }
         InvalidateRect(window, nullptr, FALSE);
+        return 0;
+    }
+    if (message == WM_TIMER && wparam == kAnimationTimer) {
+        if (self->settings_.performance_show_frametime_graph) InvalidateRect(window, nullptr, FALSE);
         return 0;
     }
     if (message == WM_PAINT) {

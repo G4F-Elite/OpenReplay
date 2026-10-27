@@ -234,7 +234,7 @@ std::pair<std::uint32_t, std::uint32_t> FitDimensions(std::uint32_t width, std::
     const auto scale = std::min({1.0, static_cast<double>(max_width) / width,
                                 static_cast<double>(max_height) / height});
     const auto even = [](double value) {
-        return std::max(2U, static_cast<std::uint32_t>(value) & ~1U);
+        return std::max(2U, static_cast<std::uint32_t>(std::lround(value / 2.0)) * 2U);
     };
     return {even(width * scale), even(height * scale)};
 }
@@ -403,7 +403,8 @@ DiscordShareService::ExportAsync(const std::filesystem::path& input, std::uint32
     if (source_size.Size() <= target_bytes) co_return source;
     const auto properties = co_await source.Properties().GetVideoPropertiesAsync();
     const auto clip = co_await MediaClip::CreateFromFileAsync(source);
-    clip.SelectedEmbeddedAudioTrackIndex(0);
+    const bool has_audio = clip.EmbeddedAudioTracks().Size() > 0;
+    if (has_audio) clip.SelectedEmbeddedAudioTrackIndex(0);
     MediaComposition composition;
     composition.Clips().Append(clip);
     const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(properties.Duration());
@@ -418,16 +419,24 @@ DiscordShareService::ExportAsync(const std::filesystem::path& input, std::uint32
     for (int attempt = 0; attempt < 3; ++attempt) {
         std::exception_ptr failure;
         try {
-            auto profile = MediaEncodingProfile::CreateMp4(VideoEncodingQuality::Auto);
+            // Auto leaves stream fields unset, which MediaComposition rejects with MF_E_TRANSFORM_TYPE_NOT_SET.
+            auto profile = MediaEncodingProfile::CreateMp4(VideoEncodingQuality::HD1080p);
             const auto dimensions = FitDimensions(properties.Width(), properties.Height(), bitrate);
             profile.Video().Width(dimensions.first);
             profile.Video().Height(dimensions.second);
             profile.Video().Bitrate(bitrate);
-            profile.Video().FrameRate().Numerator(std::min(source_fps, 60U));
+            profile.Video().FrameRate().Numerator(std::clamp(source_fps, 1U, 60U));
             profile.Video().FrameRate().Denominator(1);
-            profile.Audio().Bitrate(kDiscordAudioBitrate);
-            profile.Audio().ChannelCount(2);
-            profile.Audio().SampleRate(48000);
+            profile.Video().PixelAspectRatio().Numerator(1);
+            profile.Video().PixelAspectRatio().Denominator(1);
+            if (has_audio) {
+                profile.Audio().Bitrate(kDiscordAudioBitrate);
+                profile.Audio().ChannelCount(2);
+                profile.Audio().SampleRate(48000);
+                profile.Audio().BitsPerSample(16);
+            } else {
+                profile.Audio(nullptr);
+            }
 
             const auto transcode_result = co_await composition.RenderToFileAsync(
                 destination, MediaTrimmingPreference::Precise, profile);

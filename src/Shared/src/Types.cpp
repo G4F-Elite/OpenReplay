@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cwctype>
+#include <regex>
 #include <unordered_set>
 
 namespace openreplay {
@@ -310,6 +312,30 @@ std::uint32_t DiscordVideoBitrate(std::chrono::milliseconds duration,
                                static_cast<std::uint64_t>(duration.count());
     if (total_bitrate <= static_cast<std::uint64_t>(audio_bitrate) + minimum_video_bitrate) return 0;
     return static_cast<std::uint32_t>(std::min(total_bitrate - audio_bitrate, maximum_video_bitrate));
+}
+
+std::wstring GameFileName(std::wstring_view title) {
+    constexpr std::wstring_view reserved = L"<>:\"/\\|?*";
+    std::wstring result;
+    for (const auto character : title) {
+        if (character == L'\u2122' || character == L'\u00AE' || character == L'\u00A9') continue;
+        if (character < 32 || std::iswspace(character) || reserved.find(character) != std::wstring_view::npos) {
+            if (!result.empty() && result.back() != L' ') result += L' ';
+            continue;
+        }
+        if (result.size() >= 60) break;
+        result += character;
+    }
+    while (!result.empty() && (result.back() == L' ' || result.back() == L'.')) result.pop_back();
+    return result;
+}
+
+std::wstring ClipGameName(const std::filesystem::path& path) {
+    static const std::wregex pattern{LR"(^(.+?)_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_)"};
+    const auto stem = path.stem().wstring();
+    std::wsmatch match;
+    if (!std::regex_search(stem, match, pattern) || match[1] == L"OpenReplay") return {};
+    return match[1].str();
 }
 
 }  // namespace openreplay

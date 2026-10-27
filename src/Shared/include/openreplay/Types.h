@@ -89,6 +89,7 @@ struct Settings {
     bool performance_show_fps_lows{true};
     bool performance_show_frametime{true};
     bool performance_show_frametime_graph{true};
+    bool performance_frametime_line{false};
     bool performance_show_gpu_usage{true};
     bool performance_show_gpu_temperature{true};
     bool performance_show_gpu_clock{true};
@@ -157,5 +158,9 @@ std::uint64_t EstimateReplaySizeBytes(const Settings& settings) noexcept;
 std::uint32_t DiscordVideoBitrate(std::chrono::milliseconds duration,
                                   std::uint32_t target_megabytes,
                                   std::uint32_t audio_bitrate = 128000) noexcept;
+// A window title made safe for a file name: no reserved characters or trademark signs, at most 60 characters.
+std::wstring GameFileName(std::wstring_view title);
+// The game a clip was saved from, read back from its file name; empty when it has none.
+std::wstring ClipGameName(const std::filesystem::path& path);
 
 }  // namespace openreplay

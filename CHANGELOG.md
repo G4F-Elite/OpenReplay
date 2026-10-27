@@ -5,9 +5,24 @@ Notable user-facing changes are documented here. Development builds use the
 
 ## [Unreleased]
 
-### Fixed
+### Added
 
 - Added NVIDIA-style video filters for recordings and replays: sharpness, HDR look, color grading, presets, and optional borderless in-game preview.
+- Saved replays into a folder per game, named after the fullscreen game they were captured from.
+
+### Changed
+
+- Redesigned the overlay, settings, clip library, performance overlay, and notifications around a new dark palette, with settings grouped into cards.
+- Drew the frametime graph as one bar per frame: its width is the frame's duration, and it turns yellow below 57 FPS and red below 30 FPS.
+- Listed compressed Discord copies under their original clips in the clip library.
+
+### Fixed
+
+- Fixed Discord compression failing with "a valid type has not been set for this stream".
+- Counted only game frames in the performance overlay instead of its own repaints.
+- Kept the performance overlay above fullscreen games that make themselves topmost.
+- Kept the overlay panel at the screen edge over fullscreen games instead of shifting it beside a hidden taskbar.
+- Stopped repeated Clips clicks from reloading the clip library and freezing the overlay.
 - Kept the overlay window hidden unless it is explicitly shown, so background startup cannot leave a blank window that only Alt+Z dismisses.
 - Explicitly hid the main window during background startup after updates.
 - Routed active WASAPI sources through OBS audio channels so replay encoders receive the audio shown by the meters.

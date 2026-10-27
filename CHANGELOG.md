@@ -5,6 +5,8 @@ Notable user-facing changes are documented here. Development builds use the
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-27
+
 ### Added
 
 - Added NVIDIA-style video filters for recordings and replays: sharpness, HDR look, color grading, presets, and optional borderless in-game preview.
@@ -126,7 +128,8 @@ Notable user-facing changes are documented here. Development builds use the
 
 - Initial OpenReplay release with instant replay, recording, screenshots, audio-device selection, and the WinUI overlay.
 
-[Unreleased]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.10...HEAD
+[Unreleased]: https://github.com/G4F-Elite/OpenReplay/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.10...v0.2.0
 [0.1.10]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.4...v0.1.9
 [0.1.3]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.2...v0.1.3

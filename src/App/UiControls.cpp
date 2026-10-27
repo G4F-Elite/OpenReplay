@@ -2,6 +2,12 @@
 
 #include "UiControls.h"
 
+#include "openreplay/Types.h"
+
+#include <array>
+#include <ctime>
+#include <format>
+
 namespace openreplay::ui {
 namespace {
 
@@ -57,24 +63,26 @@ BrushType Brush(std::uint32_t argb) {
 
 UiTheme DarkTheme() {
     return {
-        .root = Brush(0xFF1B1718),
-        .panel = Brush(0xFF18181B),
-        .card = Brush(0xFF27272A),
-        .card_hover = Brush(0xFF303034),
-        .inset = Brush(0xFF202023),
-        .border = Brush(0xFF3F3F46),
-        .accent = Brush(0xFF00C16A),
-        .accent_hover = Brush(0xFF00DC82),
-        .accent_pressed = Brush(0xFF007F45),
-        .status_border = Brush(0xFF016538),
-        .accent_text = Brush(0xFF052E16),
-        .primary_text = Brush(0xFFFFFFFF),
+        .root = Brush(0xFF0E0E0F),
+        .panel = Brush(0xFF0E0E0F),
+        .card = Brush(0xFF141416),
+        .card_hover = Brush(0xFF1A1A1D),
+        .inset = Brush(0xFF111113),
+        .border = Brush(0xFF1F1F22),
+        .control_border = Brush(0xFF2E2E33),
+        .accent = Brush(0xFF76B900),
+        .accent_hover = Brush(0xFF8BD400),
+        .accent_pressed = Brush(0xFF4D7900),
+        .status_border = Brush(0xFF527F00),
+        .accent_text = Brush(0xFF0B1200),
+        .primary_text = Brush(0xFFEDEDED),
         .secondary_text = Brush(0xFFA1A1AA),
-        .danger = Brush(0xFFFF5C67),
-        .quiet = Brush(0xFF3F3F46),
-        .muted = Brush(0xFF71717A),
-        .track = Brush(0xFF52525B),
-        .track_disabled = Brush(0xFF2A2A2E),
+        .danger = Brush(0xFFFF6B6E),
+        .quiet = Brush(0xFF161618),
+        .muted = Brush(0xFF7C7C82),
+        .faint = Brush(0xFF55555B),
+        .track = Brush(0xFF1F1F22),
+        .track_disabled = Brush(0xFF17171A),
     };
 }
 
@@ -111,12 +119,15 @@ Button ControlFactory::ActionButton(std::wstring_view label, ButtonKind kind) co
     button.Content(winrt::box_value(winrt::hstring{label}));
     button.Background(kind == ButtonKind::Accent ? theme_.accent : theme_.quiet);
     button.Foreground(kind == ButtonKind::Accent ? theme_.accent_text : theme_.primary_text);
+    button.BorderBrush(kind == ButtonKind::Accent ? theme_.accent : theme_.control_border);
+    button.BorderThickness(Thickness{1, 1, 1, 1});
     button.FontFamily(PublicSans());
-    button.FontSize(13);
-    button.FontWeight(winrt::Windows::UI::Text::FontWeights::SemiBold());
-    button.MinHeight(42);
-    button.Padding(Thickness{16, 9, 16, 9});
-    button.CornerRadius(CornerRadius{12, 12, 12, 12});
+    button.FontSize(12.5);
+    button.FontWeight(kind == ButtonKind::Accent ? winrt::Windows::UI::Text::FontWeights::SemiBold()
+                                                 : winrt::Windows::UI::Text::FontWeights::Normal());
+    button.MinHeight(34);
+    button.Padding(Thickness{14, 6, 14, 6});
+    button.CornerRadius(CornerRadius{8, 8, 8, 8});
     button.HorizontalContentAlignment(HorizontalAlignment::Center);
     button.VerticalContentAlignment(VerticalAlignment::Center);
     return button;
@@ -124,9 +135,9 @@ Button ControlFactory::ActionButton(std::wstring_view label, ButtonKind kind) co
 
 Button ControlFactory::IconButton(std::wstring_view glyph, std::wstring_view tooltip, ButtonKind kind) const {
     auto button = ActionButton(L"", kind);
-    button.Width(42);
-    button.Height(42);
-    button.MinWidth(42);
+    button.Width(36);
+    button.Height(36);
+    button.MinWidth(36);
     button.Padding(Thickness{0, 0, 0, 0});
     FontIcon icon;
     icon.Glyph(winrt::hstring{glyph});
@@ -153,13 +164,15 @@ ToggleSwitch ControlFactory::Toggle() const {
     SetResource(toggle, L"ToggleSwitchStrokeOn", theme_.accent);
     SetResource(toggle, L"ToggleSwitchStrokeOnPointerOver", theme_.accent_hover);
     SetResource(toggle, L"ToggleSwitchStrokeOnPressed", theme_.accent_pressed);
-    SetResource(toggle, L"ToggleSwitchKnobFillOn", theme_.primary_text);
-    SetResource(toggle, L"ToggleSwitchKnobFillOnPointerOver", theme_.primary_text);
-    SetResource(toggle, L"ToggleSwitchKnobFillOnPressed", theme_.primary_text);
-    SetResource(toggle, L"ToggleSwitchFillOff", theme_.quiet);
-    SetResource(toggle, L"ToggleSwitchFillOffPointerOver", theme_.muted);
-    SetResource(toggle, L"ToggleSwitchStrokeOff", theme_.muted);
-    SetResource(toggle, L"ToggleSwitchKnobFillOff", theme_.primary_text);
+    SetResource(toggle, L"ToggleSwitchKnobFillOn", theme_.root);
+    SetResource(toggle, L"ToggleSwitchKnobFillOnPointerOver", theme_.root);
+    SetResource(toggle, L"ToggleSwitchKnobFillOnPressed", theme_.root);
+    SetResource(toggle, L"ToggleSwitchFillOff", theme_.control_border);
+    SetResource(toggle, L"ToggleSwitchFillOffPointerOver", theme_.control_border);
+    SetResource(toggle, L"ToggleSwitchStrokeOff", theme_.control_border);
+    SetResource(toggle, L"ToggleSwitchStrokeOffPointerOver", theme_.muted);
+    SetResource(toggle, L"ToggleSwitchKnobFillOff", theme_.muted);
+    SetResource(toggle, L"ToggleSwitchKnobFillOffPointerOver", theme_.primary_text);
     return toggle;
 }
 
@@ -169,12 +182,28 @@ void ControlFactory::StyleInput(Control const& control, double height) const {
     control.Height(height);
     control.MinHeight(height);
     control.CornerRadius(CornerRadius{8, 8, 8, 8});
+    control.Background(theme_.card);
+    control.BorderBrush(theme_.control_border);
     control.VerticalContentAlignment(VerticalAlignment::Center);
+    // Without these, hover and focus fall back to WinUI defaults, including the system accent underline.
+    SetResource(control, L"TextControlBackground", theme_.card);
+    SetResource(control, L"TextControlBackgroundPointerOver", theme_.card_hover);
+    SetResource(control, L"TextControlBackgroundFocused", theme_.card);
+    SetResource(control, L"TextControlBorderBrush", theme_.control_border);
+    SetResource(control, L"TextControlBorderBrushPointerOver", theme_.control_border);
+    SetResource(control, L"TextControlBorderBrushFocused", theme_.accent);
+    SetResource(control, L"TextControlForeground", theme_.primary_text);
+    SetResource(control, L"TextControlForegroundPointerOver", theme_.primary_text);
+    SetResource(control, L"TextControlForegroundFocused", theme_.primary_text);
+    SetResource(control, L"TextControlPlaceholderForeground", theme_.muted);
+    SetResource(control, L"TextControlPlaceholderForegroundPointerOver", theme_.muted);
+    SetResource(control, L"TextControlPlaceholderForegroundFocused", theme_.muted);
+    SetResource(control, L"TextControlSelectionHighlightColor", theme_.accent_pressed);
 }
 
 ComboBox ControlFactory::Select() const {
     ComboBox select;
-    StyleInput(select, 38);
+    StyleInput(select, 34);
     select.Padding(Thickness{12, 0, 0, 0});
     select.HorizontalAlignment(HorizontalAlignment::Stretch);
     select.HorizontalContentAlignment(HorizontalAlignment::Stretch);
@@ -194,7 +223,7 @@ ComboBoxItem ControlFactory::Option(std::wstring_view label) const {
 
 TextBox ControlFactory::HotkeyInput(std::wstring_view placeholder) const {
     TextBox input;
-    StyleInput(input, 36);
+    StyleInput(input, 34);
     input.Padding(Thickness{12, 0, 12, 0});
     input.IsReadOnly(true);
     if (!placeholder.empty()) input.PlaceholderText(winrt::hstring{placeholder});
@@ -204,7 +233,7 @@ TextBox ControlFactory::HotkeyInput(std::wstring_view placeholder) const {
 
 PasswordBox ControlFactory::SecretInput(std::wstring_view placeholder) const {
     PasswordBox input;
-    StyleInput(input, 38);
+    StyleInput(input, 34);
     input.Padding(Thickness{12, 0, 12, 0});
     input.PasswordRevealMode(PasswordRevealMode::Peek);
     if (!placeholder.empty()) input.PlaceholderText(winrt::hstring{placeholder});
@@ -214,7 +243,7 @@ PasswordBox ControlFactory::SecretInput(std::wstring_view placeholder) const {
 
 NumberBox ControlFactory::NumberInput(double minimum, double maximum, double step) const {
     NumberBox input;
-    StyleInput(input, 36);
+    StyleInput(input, 34);
     input.Padding(Thickness{10, 0, 4, 0});
     input.Minimum(minimum);
     input.Maximum(maximum);
@@ -311,7 +340,7 @@ Border ControlFactory::ShortcutSurface() const {
     surface.BorderBrush(theme_.border);
     surface.BorderThickness(Thickness{1, 1, 1, 1});
     surface.CornerRadius(CornerRadius{8, 8, 8, 8});
-    surface.Padding(Thickness{12, 12, 12, 12});
+    surface.Padding(Thickness{12, 10, 12, 10});
     return surface;
 }
 
@@ -321,6 +350,70 @@ Border ControlFactory::AudioDeviceSurface() const {
     surface.CornerRadius(CornerRadius{7, 7, 7, 7});
     surface.Padding(Thickness{9, 7, 9, 7});
     return surface;
+}
+
+bool IsVideoClip(const std::filesystem::directory_entry& entry) {
+    std::error_code error;
+    if (!entry.is_regular_file(error)) return false;
+    const auto extension = entry.path().extension().wstring();
+    return _wcsicmp(extension.c_str(), L".mkv") == 0 || _wcsicmp(extension.c_str(), L".mp4") == 0;
+}
+
+std::vector<std::filesystem::directory_entry> ListClips(const std::filesystem::path& directory) {
+    std::vector<std::filesystem::directory_entry> clips;
+    std::error_code error;
+    for (std::filesystem::recursive_directory_iterator it{
+             directory, std::filesystem::directory_options::skip_permission_denied, error}, end;
+         !error && it != end; it.increment(error)) {
+        std::error_code type_error;
+        if (it->is_directory(type_error)) {
+            if (it.depth() > 0 || it->path().filename() == L"Discord") it.disable_recursion_pending();
+            continue;
+        }
+        if (IsVideoClip(*it)) clips.push_back(*it);
+    }
+    return clips;
+}
+
+std::wstring ClipTitle(const std::filesystem::path& path, bool english) {
+    if (auto game = openreplay::ClipGameName(path); !game.empty()) return game;
+    const auto name = path.filename().wstring();
+    if (name.find(L"_Replay") != std::wstring::npos) return english ? L"Replay" : L"Повтор";
+    if (name.find(L"_Recording") != std::wstring::npos) return english ? L"Recording" : L"Запись";
+    return english ? L"Clip" : L"Клип";
+}
+
+namespace {
+
+std::tm LocalTime(std::chrono::system_clock::time_point time) {
+    const auto value = std::chrono::system_clock::to_time_t(time);
+    std::tm local{};
+    localtime_s(&local, &value);
+    return local;
+}
+
+std::tm LocalTime(std::filesystem::file_time_type written) {
+    return LocalTime(std::chrono::clock_cast<std::chrono::system_clock>(written));
+}
+
+}  // namespace
+
+std::wstring ClipDay(std::filesystem::file_time_type written, bool english) {
+    const auto clip = LocalTime(written);
+    const auto now = std::chrono::system_clock::now();
+    const auto same_day = [&](const std::tm& day) { return clip.tm_year == day.tm_year && clip.tm_yday == day.tm_yday; };
+    if (same_day(LocalTime(now))) return english ? L"Today" : L"Сегодня";
+    if (same_day(LocalTime(now - std::chrono::hours{24}))) return english ? L"Yesterday" : L"Вчера";
+    constexpr std::array<const wchar_t*, 12> months_en{L"Jan", L"Feb", L"Mar", L"Apr", L"May", L"Jun",
+                                                       L"Jul", L"Aug", L"Sep", L"Oct", L"Nov", L"Dec"};
+    constexpr std::array<const wchar_t*, 12> months_ru{L"янв", L"фев", L"мар", L"апр", L"мая", L"июн",
+                                                       L"июл", L"авг", L"сен", L"окт", L"ноя", L"дек"};
+    return std::to_wstring(clip.tm_mday) + L" " + (english ? months_en : months_ru)[clip.tm_mon];
+}
+
+std::wstring ClipClock(std::filesystem::file_time_type written) {
+    const auto clip = LocalTime(written);
+    return std::format(L"{:02}:{:02}", clip.tm_hour, clip.tm_min);
 }
 
 }  // namespace openreplay::ui

@@ -13,6 +13,8 @@
 
 #include "microsoft.ui.xaml.window.h"
 
+#include <dwmapi.h>
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -24,13 +26,153 @@ using openreplay::ui::AddColumn;
 using openreplay::ui::AddRow;
 using openreplay::ui::Brush;
 using openreplay::ui::ButtonKind;
+using openreplay::ui::ClipClock;
+using openreplay::ui::ClipDay;
+using openreplay::ui::ClipTitle;
 using openreplay::ui::ControlFactory;
 using openreplay::ui::DarkTheme;
+using openreplay::ui::ListClips;
 using openreplay::ui::PublicSans;
 using openreplay::ui::Text;
 
 constexpr UINT_PTR kNotificationAnimationTimer = 1;
 constexpr UINT_PTR kNotificationHideTimer = 2;
+constexpr int kBufferSegments = 30;
+constexpr int kNotificationWidth = 360;
+
+enum class NotificationAction { Copy, Webhook, OpenFolder, CopyPath };
+using NotificationActions = std::vector<std::pair<NotificationAction, std::wstring>>;
+
+NotificationActions NotificationActionsFor(bool has_output, bool shareable, bool webhook, bool english) {
+    NotificationActions actions;
+    if (has_output && shareable) {
+        actions.emplace_back(NotificationAction::Copy, english ? L"Copy" : L"Скопировать");
+        if (webhook) actions.emplace_back(NotificationAction::Webhook, english ? L"Send webhook" : L"Webhook");
+    }
+    if (has_output) {
+        actions.emplace_back(NotificationAction::OpenFolder, english ? L"Open folder" : L"Открыть папку");
+        actions.emplace_back(NotificationAction::CopyPath, english ? L"Copy path" : L"Копировать путь");
+    }
+    return actions;
+}
+
+struct NotificationFonts {
+    HFONT title{};
+    HFONT body{};
+    HFONT action{};
+
+    explicit NotificationFonts(UINT dpi) {
+        const auto make = [dpi](int size, int weight) {
+            return CreateFontW(-openreplay::ui::ScaleForDpi(size, dpi), 0, 0, 0, weight, FALSE, FALSE, FALSE,
+                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                               DEFAULT_PITCH, L"Public Sans");
+        };
+        title = make(14, FW_SEMIBOLD);
+        body = make(12, FW_NORMAL);
+        action = make(12, FW_SEMIBOLD);
+    }
+    ~NotificationFonts() {
+        for (const auto font : {title, body, action}) {
+            if (font) DeleteObject(font);
+        }
+    }
+    NotificationFonts(const NotificationFonts&) = delete;
+    NotificationFonts& operator=(const NotificationFonts&) = delete;
+};
+
+struct NotificationLayout {
+    int height{};
+    RECT marker{};
+    RECT title{};
+    RECT message{};
+    std::vector<std::pair<NotificationAction, RECT>> actions;
+};
+
+// The only source of notification geometry: window size, painting and hit testing all use it.
+NotificationLayout MeasureNotification(HDC dc, UINT dpi, const NotificationFonts& fonts, std::wstring_view message,
+                                       const NotificationActions& actions) {
+    const auto scale = [dpi](int value) { return openreplay::ui::ScaleForDpi(value, dpi); };
+    const auto old_font = SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT));
+    const auto measure = [dc](HFONT font, std::wstring_view text, int width, UINT format) {
+        SelectObject(dc, font ? font : GetStockObject(DEFAULT_GUI_FONT));
+        RECT rect{0, 0, width, 0};
+        DrawTextW(dc, text.data(), static_cast<int>(text.size()), &rect, format | DT_CALCRECT | DT_NOPREFIX);
+        return rect;
+    };
+    NotificationLayout layout;
+    const int left = scale(34);
+    const int right = scale(kNotificationWidth) - scale(16);
+    int y = scale(14);
+    const int title_height = measure(fonts.title, L"Ag", right - left, DT_SINGLELINE).bottom;
+    layout.title = {left, y, right, y + title_height};
+    const int marker_top = y + (title_height - scale(8)) / 2;
+    layout.marker = {scale(16), marker_top, scale(24), marker_top + scale(8)};
+    y = layout.title.bottom;
+    if (!message.empty()) {
+        y += scale(3);
+        const int line = measure(fonts.body, L"Ag", right - left, DT_SINGLELINE).bottom;
+        const int height = measure(fonts.body, message, right - left, DT_WORDBREAK | DT_EDITCONTROL).bottom;
+        layout.message = {left, y, right, y + std::min(height, line * 3)};
+        y = layout.message.bottom;
+    }
+    if (!actions.empty()) {
+        y += scale(10);
+        const int row_height = measure(fonts.action, L"Ag", right - left, DT_SINGLELINE).bottom;
+        int x = left;
+        for (const auto& [action, label] : actions) {
+            const int width = measure(fonts.action, label, right - left, DT_SINGLELINE).right;
+            if (x > left && x + width > right) {
+                x = left;
+                y += row_height + scale(6);
+            }
+            layout.actions.emplace_back(action, RECT{x, y, x + width, y + row_height});
+            x += width + scale(16);
+        }
+        y += row_height;
+    }
+    layout.height = y + scale(14);
+    SelectObject(dc, old_font);
+    return layout;
+}
+constexpr std::size_t kRecentClipCount = 3;
+
+// One keycap per chord part: "Alt+F10" -> [Alt][F10].
+// The game a replay comes from: the title of a fullscreen window. Empty for anything else, so a browser or
+// desktop session never leaks a page title into a file name.
+std::wstring GameNameOf(HWND window) {
+    if (!window || !IsWindow(window) || !openreplay::ui::IsFullscreenWindow(window)) return {};
+    std::array<wchar_t, 256> title{};
+    GetWindowTextW(window, title.data(), static_cast<int>(title.size()));
+    return openreplay::GameFileName(title.data());
+}
+
+void FillKeycaps(winrt::Microsoft::UI::Xaml::Controls::StackPanel const& panel, std::string_view chord,
+                 bool on_accent) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    using namespace winrt::Microsoft::UI::Xaml::Controls;
+    panel.Children().Clear();
+    const auto theme = DarkTheme();
+    std::size_t start = 0;
+    while (start < chord.size()) {
+        const auto end = std::min(chord.find('+', start), chord.size());
+        const auto part = chord.substr(start, end - start);
+        start = end + 1;
+        if (part.empty()) continue;
+        Border cap;
+        cap.MinWidth(24);
+        cap.Padding(Thickness{6, 2, 6, 3});
+        cap.CornerRadius(CornerRadius{5, 5, 5, 5});
+        cap.BorderThickness(Thickness{1, 1, 1, 2});
+        cap.BorderBrush(on_accent ? Brush(0x400B1200) : theme.control_border);
+        cap.Background(on_accent ? Brush(0x140B1200) : Brush(0x00000000));
+        auto label = Text(openreplay::FromUtf8(std::string{part}), 11,
+                          on_accent ? theme.accent_text : Brush(0xFFC4C4C8));
+        label.FontFamily(Media::FontFamily{L"Cascadia Mono, Consolas"});
+        label.HorizontalAlignment(HorizontalAlignment::Center);
+        cap.Child(label);
+        panel.Children().Append(cap);
+    }
+}
 
 struct WipeString {
     std::wstring& value;
@@ -293,18 +435,12 @@ void MainWindow::BuildUi() {
     const ControlFactory controls{theme};
     const auto root_brush = theme.root;
     const auto panel_brush = theme.panel;
-    const auto card_brush = theme.card;
-    const auto card_hover_brush = theme.card_hover;
     const auto card_border_brush = theme.border;
     accent_brush_ = theme.accent;
     success_brush_ = theme.accent_hover;
-    const auto accent_dark_brush = theme.accent_pressed;
-    const auto deep_green_brush = theme.status_border;
-    const auto near_black_green_brush = theme.accent_text;
     const auto primary_text_brush = theme.primary_text;
     secondary_text_brush_ = theme.secondary_text;
     danger_brush_ = theme.danger;
-    const auto quiet_button_brush = theme.quiet;
     const auto muted_brush = theme.muted;
 
     root_ = Grid{};
@@ -321,276 +457,450 @@ void MainWindow::BuildUi() {
     shell.VerticalAlignment(VerticalAlignment::Stretch);
 
     Grid layout;
-    AddRow(layout, 80, GridUnitType::Pixel);
+    AddRow(layout, 0, GridUnitType::Auto);
     AddRow(layout, 0, GridUnitType::Auto);
     AddRow(layout, 1, GridUnitType::Star);
-    AddRow(layout, 44, GridUnitType::Pixel);
+    AddRow(layout, 48, GridUnitType::Pixel);
     shell.Child(layout);
 
+    const auto faint_brush = theme.faint;
+    const auto line_brush = theme.border;
+    const auto transparent_brush = Brush(0x00000000);
+    const auto semibold = Windows::UI::Text::FontWeights::SemiBold();
+
+    const auto make_row = [&](UIElement const& child, Thickness padding = Thickness{24, 13, 24, 13}) {
+        Border row;
+        row.BorderBrush(line_brush);
+        row.BorderThickness(Thickness{0, 0, 0, 1});
+        row.Padding(padding);
+        row.Child(child);
+        return row;
+    };
+    const auto make_icon = [&](std::wstring_view glyph, double size, Media::Brush const& brush) {
+        FontIcon icon;
+        icon.Glyph(winrt::hstring{glyph});
+        icon.FontSize(size);
+        icon.Foreground(brush);
+        return icon;
+    };
+    const auto plain_button = [&](Button const& button) {
+        button.Background(transparent_brush);
+        button.BorderThickness(Thickness{0, 0, 0, 0});
+        button.CornerRadius(CornerRadius{0, 0, 0, 0});
+        button.HorizontalAlignment(HorizontalAlignment::Stretch);
+        button.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+        button.VerticalContentAlignment(VerticalAlignment::Center);
+    };
+
     Grid header;
-    header.Padding(Thickness{20, 0, 16, 0});
-    header.Background(panel_brush);
+    header.Padding(Thickness{24, 16, 12, 0});
     AddColumn(header, 1, GridUnitType::Star);
-    AddColumn(header, 0, GridUnitType::Auto);
-    AddColumn(header, 0, GridUnitType::Auto);
     AddColumn(header, 0, GridUnitType::Auto);
     Grid::SetRow(header, 0);
 
     StackPanel brand;
     brand.Orientation(Orientation::Horizontal);
+    brand.Spacing(8);
     brand.VerticalAlignment(VerticalAlignment::Center);
     Border brand_mark;
-    brand_mark.Width(5);
-    brand_mark.Height(40);
+    brand_mark.Width(8);
+    brand_mark.Height(8);
     brand_mark.CornerRadius(CornerRadius{2, 2, 2, 2});
     brand_mark.Background(accent_brush_);
-    brand_mark.Margin(Thickness{0, 0, 12, 0});
+    brand_mark.VerticalAlignment(VerticalAlignment::Center);
     brand.Children().Append(brand_mark);
-    StackPanel brand_copy;
-    auto brand_text = Text(L"OPENREPLAY", 19, primary_text_brush);
-    brand_text.FontWeight(Windows::UI::Text::FontWeights::Bold());
-    brand_text.CharacterSpacing(35);
-    brand_copy.Children().Append(brand_text);
-    encoder_text_ = Text(L"Capture pipeline is starting", 11, muted_brush);
-    encoder_text_.TextTrimming(TextTrimming::CharacterEllipsis);
-    encoder_text_.MaxWidth(230);
-    encoder_text_.Margin(Thickness{0, 2, 0, 0});
-    brand_copy.Children().Append(encoder_text_);
-    brand.Children().Append(brand_copy);
+    auto brand_text = Text(L"OpenReplay", 14, primary_text_brush);
+    brand_text.FontWeight(semibold);
+    brand.Children().Append(brand_text);
     header.Children().Append(brand);
 
-    settings_button_ = controls.ActionButton(L"");
-    settings_button_.Margin(Thickness{0, 0, 8, 0});
-    settings_button_.MinWidth(102);
-    settings_button_.VerticalAlignment(VerticalAlignment::Center);
-    settings_button_.Click({this, &MainWindow::SettingsButton_Click});
-    settings_button_text_ = Text(L"Настройки", 12, primary_text_brush);
-    settings_button_text_.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-    settings_button_.Content(settings_button_text_);
-    Grid::SetColumn(settings_button_, 1);
-    header.Children().Append(settings_button_);
-
-    gallery_button_ = controls.ActionButton(L"Clips");
-    gallery_button_.Margin(Thickness{0, 0, 8, 0});
-    gallery_button_.MinWidth(82);
-    gallery_button_.VerticalAlignment(VerticalAlignment::Center);
+    StackPanel nav;
+    nav.Orientation(Orientation::Horizontal);
+    nav.VerticalAlignment(VerticalAlignment::Center);
+    const auto nav_tab = [&] {
+        Button tab;
+        tab.FontFamily(openreplay::ui::PublicSans());
+        tab.FontSize(13);
+        tab.Foreground(muted_brush);
+        tab.Background(transparent_brush);
+        tab.BorderThickness(Thickness{0, 0, 0, 0});
+        tab.CornerRadius(CornerRadius{6, 6, 6, 6});
+        tab.Padding(Thickness{9, 6, 9, 6});
+        tab.MinHeight(30);
+        nav.Children().Append(tab);
+        return tab;
+    };
+    back_button_ = nav_tab();
+    back_button_.Click({this, &MainWindow::BackButton_Click});
+    gallery_button_ = nav_tab();
     gallery_button_.Click({this, &MainWindow::GalleryButton_Click});
-    Grid::SetColumn(gallery_button_, 2);
-    header.Children().Append(gallery_button_);
-
-    auto close_button = controls.ActionButton(L"×");
-    close_button.Width(42);
-    close_button.Height(42);
-    close_button.Padding(Thickness{0, 0, 0, 0});
-    close_button.FontSize(20);
-    close_button.VerticalAlignment(VerticalAlignment::Center);
+    settings_button_ = nav_tab();
+    settings_button_text_ = Text(L"Настройки", 13, muted_brush);
+    settings_button_.Content(settings_button_text_);
+    settings_button_.Click({this, &MainWindow::SettingsButton_Click});
+    auto close_button = nav_tab();
+    close_button.Content(make_icon(L"\xE711", 11, muted_brush));
+    close_button.Margin(Thickness{4, 0, 0, 0});
     close_button.Click({this, &MainWindow::CloseButton_Click});
-    Grid::SetColumn(close_button, 3);
-    header.Children().Append(close_button);
+    Grid::SetColumn(nav, 1);
+    header.Children().Append(nav);
     layout.Children().Append(header);
 
     dashboard_panel_ = Grid{};
-    dashboard_panel_.Padding(Thickness{20, 18, 20, 16});
-    AddRow(dashboard_panel_, 0, GridUnitType::Auto);
-    AddRow(dashboard_panel_, 0, GridUnitType::Auto);
-    AddRow(dashboard_panel_, 1, GridUnitType::Star);
     Grid::SetRow(dashboard_panel_, 2);
+    ScrollViewer dashboard_scroll;
+    dashboard_scroll.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+    dashboard_scroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
+    StackPanel dashboard;
+    dashboard_scroll.Content(dashboard);
+    dashboard_panel_.Children().Append(dashboard_scroll);
 
-    dashboard_title_ = Text(L"Центр захвата", 27, primary_text_brush);
-    dashboard_title_.FontWeight(Windows::UI::Text::FontWeights::Bold());
-    dashboard_panel_.Children().Append(dashboard_title_);
-    dashboard_subtitle_ = Text(L"Состояние и быстрые действия", 12.5, secondary_text_brush_);
-    dashboard_subtitle_.Margin(Thickness{0, 5, 0, 0});
-    Grid::SetRow(dashboard_subtitle_, 1);
-    dashboard_panel_.Children().Append(dashboard_subtitle_);
+    StackPanel buffer_heading;
+    buffer_heading.Orientation(Orientation::Horizontal);
+    buffer_heading.Spacing(10);
+    buffer_heading.Margin(Thickness{24, 26, 24, 0});
+    buffer_value_text_ = Text(L"", 44, primary_text_brush);
+    buffer_value_text_.FontWeight(Windows::UI::Text::FontWeights::Light());
+    buffer_value_text_.CharacterSpacing(-20);
+    buffer_filled_run_ = Documents::Run{};
+    buffer_filled_run_.FontWeight(semibold);
+    buffer_filled_run_.Text(L"0");
+    buffer_total_run_ = Documents::Run{};
+    buffer_value_text_.Inlines().Append(buffer_filled_run_);
+    buffer_value_text_.Inlines().Append(buffer_total_run_);
+    buffer_heading.Children().Append(buffer_value_text_);
+    replay_state_text_ = Text(L"Подключение...", 13, muted_brush);
+    replay_state_text_.VerticalAlignment(VerticalAlignment::Bottom);
+    replay_state_text_.Margin(Thickness{0, 0, 0, 8});
+    buffer_heading.Children().Append(replay_state_text_);
+    dashboard.Children().Append(buffer_heading);
 
-    ScrollViewer cards_scroll;
-    cards_scroll.Margin(Thickness{0, 18, 0, 0});
-    cards_scroll.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
-    cards_scroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
-    Grid::SetRow(cards_scroll, 2);
-    StackPanel cards;
-    cards.Spacing(10);
-    cards_scroll.Content(cards);
+    buffer_segments_ = Grid{};
+    buffer_segments_.Height(22);
+    buffer_segments_.ColumnSpacing(3);
+    buffer_segments_.Margin(Thickness{24, 16, 24, 0});
+    buffer_segment_cells_.clear();
+    track_brush_ = theme.track;
+    for (int index = 0; index < kBufferSegments; ++index) {
+        AddColumn(buffer_segments_, 1, GridUnitType::Star);
+        Border cell;
+        cell.CornerRadius(CornerRadius{1, 1, 1, 1});
+        cell.Background(theme.track);
+        Grid::SetColumn(cell, index);
+        buffer_segments_.Children().Append(cell);
+        buffer_segment_cells_.push_back(cell);
+    }
+    dashboard.Children().Append(buffer_segments_);
 
-    const auto create_card = [&] {
-        Border card;
-        card.Background(card_brush);
-        card.BorderBrush(card_border_brush);
-        card.BorderThickness(Thickness{1, 1, 1, 1});
-        card.CornerRadius(CornerRadius{8, 8, 8, 8});
-        card.Shadow(Microsoft::UI::Xaml::Media::ThemeShadow{});
-        card.Translation(Windows::Foundation::Numerics::float3{0.0f, 0.0f, 6.0f});
-        card.PointerEntered([card_hover_brush, accent_dark_brush](auto const& sender, auto const&) {
-            const auto hovered = sender.template as<Border>();
-            hovered.Background(card_hover_brush);
-            hovered.BorderBrush(accent_dark_brush);
-            hovered.Translation(Windows::Foundation::Numerics::float3{0.0f, 0.0f, 10.0f});
-        });
-        card.PointerExited([card_brush, card_border_brush](auto const& sender, auto const&) {
-            const auto hovered = sender.template as<Border>();
-            hovered.Background(card_brush);
-            hovered.BorderBrush(card_border_brush);
-            hovered.Translation(Windows::Foundation::Numerics::float3{0.0f, 0.0f, 6.0f});
-        });
-        StackPanel content;
-        content.Padding(Thickness{18, 16, 18, 16});
-        card.Child(content);
-        cards.Children().Append(card);
+    Grid buffer_scale;
+    buffer_scale.Margin(Thickness{24, 6, 24, 0});
+    AddColumn(buffer_scale, 1, GridUnitType::Star);
+    AddColumn(buffer_scale, 1, GridUnitType::Star);
+    AddColumn(buffer_scale, 1, GridUnitType::Star);
+    buffer_start_label_ = Text(L"", 10.5, faint_brush);
+    buffer_scale.Children().Append(buffer_start_label_);
+    buffer_middle_label_ = Text(L"", 10.5, faint_brush);
+    buffer_middle_label_.HorizontalAlignment(HorizontalAlignment::Center);
+    Grid::SetColumn(buffer_middle_label_, 1);
+    buffer_scale.Children().Append(buffer_middle_label_);
+    buffer_now_label_ = Text(L"", 10.5, faint_brush);
+    buffer_now_label_.HorizontalAlignment(HorizontalAlignment::Right);
+    Grid::SetColumn(buffer_now_label_, 2);
+    buffer_scale.Children().Append(buffer_now_label_);
+    dashboard.Children().Append(buffer_scale);
+
+    StackPanel meta;
+    meta.Orientation(Orientation::Horizontal);
+    meta.Spacing(14);
+    meta.Margin(Thickness{24, 12, 24, 0});
+    encoder_text_ = Text(L"Capture pipeline is starting", 12, secondary_text_brush_);
+    encoder_text_.TextTrimming(TextTrimming::CharacterEllipsis);
+    encoder_text_.MaxWidth(200);
+    meta.Children().Append(encoder_text_);
+    dashboard_meta_text_ = Text(L"", 12, muted_brush);
+    dashboard_meta_text_.TextTrimming(TextTrimming::CharacterEllipsis);
+    meta.Children().Append(dashboard_meta_text_);
+    dashboard.Children().Append(meta);
+
+    save_replay_button_ = controls.ActionButton(L"", ButtonKind::Accent);
+    save_replay_button_.Height(52);
+    save_replay_button_.CornerRadius(CornerRadius{10, 10, 10, 10});
+    save_replay_button_.Margin(Thickness{24, 24, 24, 0});
+    save_replay_button_.Padding(Thickness{18, 0, 14, 0});
+    save_replay_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
+    save_replay_button_.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+    Grid save_content;
+    AddColumn(save_content, 1, GridUnitType::Star);
+    AddColumn(save_content, 0, GridUnitType::Auto);
+    save_replay_text_ = Text(L"Сохранить повтор", 15, theme.accent_text);
+    save_replay_text_.FontWeight(semibold);
+    save_replay_text_.VerticalAlignment(VerticalAlignment::Center);
+    save_content.Children().Append(save_replay_text_);
+    save_replay_keys_ = StackPanel{};
+    save_replay_keys_.Orientation(Orientation::Horizontal);
+    save_replay_keys_.Spacing(4);
+    save_replay_keys_.VerticalAlignment(VerticalAlignment::Center);
+    Grid::SetColumn(save_replay_keys_, 1);
+    save_content.Children().Append(save_replay_keys_);
+    save_replay_button_.Content(save_content);
+    save_replay_button_.Click({this, &MainWindow::SaveReplay_Click});
+    dashboard.Children().Append(save_replay_button_);
+
+    StackPanel actions;
+    actions.Margin(Thickness{0, 20, 0, 0});
+    actions.BorderBrush(line_brush);
+    actions.BorderThickness(Thickness{0, 1, 0, 0});
+    const auto action_content = [&](std::wstring_view glyph, TextBlock const& title, TextBlock const& subtitle,
+                                    FrameworkElement const& trailing) {
+        Grid content;
+        content.ColumnSpacing(14);
+        AddColumn(content, 32, GridUnitType::Pixel);
+        AddColumn(content, 1, GridUnitType::Star);
+        AddColumn(content, 0, GridUnitType::Auto);
+        auto icon = make_icon(glyph, 16, secondary_text_brush_);
+        icon.VerticalAlignment(VerticalAlignment::Center);
+        content.Children().Append(icon);
+        StackPanel copy;
+        copy.VerticalAlignment(VerticalAlignment::Center);
+        title.FontWeight(Windows::UI::Text::FontWeights::Medium());
+        copy.Children().Append(title);
+        subtitle.Margin(Thickness{0, 3, 0, 0});
+        subtitle.TextTrimming(TextTrimming::CharacterEllipsis);
+        copy.Children().Append(subtitle);
+        Grid::SetColumn(copy, 1);
+        content.Children().Append(copy);
+        trailing.VerticalAlignment(VerticalAlignment::Center);
+        Grid::SetColumn(trailing, 2);
+        content.Children().Append(trailing);
         return content;
     };
+    const auto keycaps_panel = [] {
+        StackPanel panel;
+        panel.Orientation(Orientation::Horizontal);
+        panel.Spacing(4);
+        return panel;
+    };
 
-    auto replay_card = create_card();
-    Grid replay_header;
-    AddColumn(replay_header, 1, GridUnitType::Star);
-    AddColumn(replay_header, 0, GridUnitType::Auto);
-    replay_title_ = Text(L"Мгновенный повтор", 18, primary_text_brush);
-    replay_title_.FontWeight(Windows::UI::Text::FontWeights::Bold());
-    replay_title_.VerticalAlignment(VerticalAlignment::Center);
-    replay_header.Children().Append(replay_title_);
+    replay_title_ = Text(L"Мгновенный повтор", 15, primary_text_brush);
+    replay_description_ = Text(L"", 12, muted_brush);
     replay_toggle_ = controls.Toggle();
-    replay_toggle_.HorizontalAlignment(HorizontalAlignment::Right);
-    replay_toggle_.VerticalAlignment(VerticalAlignment::Center);
     replay_toggle_.Toggled({this, &MainWindow::ReplayToggle_Toggled});
-    Grid::SetColumn(replay_toggle_, 1);
-    replay_header.Children().Append(replay_toggle_);
-    replay_card.Children().Append(replay_header);
-    Border replay_status;
-    replay_status.Background(near_black_green_brush);
-    replay_status.BorderBrush(deep_green_brush);
-    replay_status.BorderThickness(Thickness{1, 1, 1, 1});
-    replay_status.CornerRadius(CornerRadius{6, 6, 6, 6});
-    replay_status.Padding(Thickness{9, 4, 9, 4});
-    replay_status.HorizontalAlignment(HorizontalAlignment::Left);
-    replay_status.Margin(Thickness{0, 12, 0, 0});
-    replay_state_text_ = Text(L"Подключение...", 12, success_brush_);
-    replay_state_text_.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-    replay_status.Child(replay_state_text_);
-    replay_card.Children().Append(replay_status);
-    replay_description_ = Text(L"Сохранит последние 60 секунд без остановки игры.", 13, secondary_text_brush_);
-    replay_description_.TextWrapping(TextWrapping::Wrap);
-    replay_description_.LineHeight(18);
-    replay_description_.Margin(Thickness{0, 12, 0, 14});
-    replay_card.Children().Append(replay_description_);
-    save_replay_button_ = controls.ActionButton(L"Сохранить последние 60 сек", ButtonKind::Accent);
-    save_replay_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
-    save_replay_button_.Click({this, &MainWindow::SaveReplay_Click});
-    replay_card.Children().Append(save_replay_button_);
+    actions.Children().Append(make_row(action_content(L"\xE81C", replay_title_, replay_description_, replay_toggle_),
+                                       Thickness{24, 14, 24, 14}));
 
-    auto recording_card = create_card();
-    Grid recording_header;
-    AddColumn(recording_header, 1, GridUnitType::Star);
-    AddColumn(recording_header, 0, GridUnitType::Auto);
-    recording_title_ = Text(L"Запись сессии", 18, primary_text_brush);
-    recording_title_.FontWeight(Windows::UI::Text::FontWeights::Bold());
-    recording_header.Children().Append(recording_title_);
-    recording_state_text_ = Text(L"Готово к записи", 12, secondary_text_brush_);
-    recording_state_text_.VerticalAlignment(VerticalAlignment::Center);
-    recording_state_text_.Margin(Thickness{12, 0, 0, 0});
-    Grid::SetColumn(recording_state_text_, 1);
-    recording_header.Children().Append(recording_state_text_);
-    recording_card.Children().Append(recording_header);
-    recording_description_ = Text(L"MKV  •  Игра, система и микрофон на отдельных дорожках", 13,
-                                   secondary_text_brush_);
-    recording_description_.TextWrapping(TextWrapping::Wrap);
-    recording_description_.LineHeight(18);
-    recording_description_.Margin(Thickness{0, 13, 0, 14});
-    recording_card.Children().Append(recording_description_);
-    recording_button_ = controls.ActionButton(L"Начать запись");
-    recording_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
+    recording_title_ = Text(L"Начать запись", 15, primary_text_brush);
+    recording_state_text_ = Text(L"Готово к записи", 12, muted_brush);
+    recording_keys_ = keycaps_panel();
+    recording_button_ = Button{};
+    plain_button(recording_button_);
+    recording_button_.Padding(Thickness{24, 14, 24, 14});
+    recording_button_.Content(action_content(L"\xE7C8", recording_title_, recording_state_text_, recording_keys_));
     recording_button_.Click({this, &MainWindow::RecordingButton_Click});
-    recording_card.Children().Append(recording_button_);
+    actions.Children().Append(make_row(recording_button_, Thickness{}));
 
-    auto screenshot_card = create_card();
-    Grid screenshot_header;
-    AddColumn(screenshot_header, 1, GridUnitType::Star);
-    AddColumn(screenshot_header, 0, GridUnitType::Auto);
-    screenshot_title_ = Text(L"Снимок экрана", 18, primary_text_brush);
-    screenshot_title_.FontWeight(Windows::UI::Text::FontWeights::Bold());
-    screenshot_header.Children().Append(screenshot_title_);
-    screenshot_state_text_ = Text(L"PNG", 12, success_brush_);
-    screenshot_state_text_.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-    screenshot_state_text_.VerticalAlignment(VerticalAlignment::Center);
-    screenshot_state_text_.Margin(Thickness{12, 0, 0, 0});
-    Grid::SetColumn(screenshot_state_text_, 1);
-    screenshot_header.Children().Append(screenshot_state_text_);
-    screenshot_card.Children().Append(screenshot_header);
-    screenshot_description_ = Text(L"Сохранение в исходном разрешении выбранного монитора.", 13,
-                                     secondary_text_brush_);
-    screenshot_description_.TextWrapping(TextWrapping::Wrap);
-    screenshot_description_.LineHeight(18);
-    screenshot_description_.Margin(Thickness{0, 13, 0, 14});
-    screenshot_card.Children().Append(screenshot_description_);
-    screenshot_button_ = controls.ActionButton(L"Сделать снимок");
-    screenshot_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
+    screenshot_title_ = Text(L"Снимок экрана", 15, primary_text_brush);
+    screenshot_state_text_ = Text(L"PNG", 12, muted_brush);
+    screenshot_keys_ = keycaps_panel();
+    screenshot_button_ = Button{};
+    plain_button(screenshot_button_);
+    screenshot_button_.Padding(Thickness{24, 14, 24, 14});
+    screenshot_button_.Content(action_content(L"\xE722", screenshot_title_, screenshot_state_text_, screenshot_keys_));
     screenshot_button_.Click({this, &MainWindow::ScreenshotButton_Click});
-    screenshot_card.Children().Append(screenshot_button_);
-    dashboard_panel_.Children().Append(cards_scroll);
+    actions.Children().Append(make_row(screenshot_button_, Thickness{}));
+    dashboard.Children().Append(actions);
+
+    Grid recent_header;
+    recent_header.Margin(Thickness{24, 28, 14, 8});
+    AddColumn(recent_header, 1, GridUnitType::Star);
+    AddColumn(recent_header, 0, GridUnitType::Auto);
+    recent_title_ = Text(L"НЕДАВНИЕ", 11, faint_brush);
+    recent_title_.CharacterSpacing(120);
+    recent_title_.VerticalAlignment(VerticalAlignment::Center);
+    recent_header.Children().Append(recent_title_);
+    recent_all_button_ = Button{};
+    recent_all_button_.Background(transparent_brush);
+    recent_all_button_.BorderThickness(Thickness{0, 0, 0, 0});
+    recent_all_button_.Padding(Thickness{10, 4, 10, 4});
+    recent_all_button_.FontFamily(openreplay::ui::PublicSans());
+    recent_all_button_.FontSize(12);
+    recent_all_button_.Foreground(muted_brush);
+    recent_all_button_.Click({this, &MainWindow::GalleryButton_Click});
+    Grid::SetColumn(recent_all_button_, 1);
+    recent_header.Children().Append(recent_all_button_);
+    dashboard.Children().Append(recent_header);
+    recent_clips_panel_ = StackPanel{};
+    recent_clips_panel_.Margin(Thickness{0, 0, 0, 24});
+    dashboard.Children().Append(recent_clips_panel_);
     layout.Children().Append(dashboard_panel_);
 
     settings_panel_ = Grid{};
-    settings_panel_.Padding(Thickness{20, 18, 20, 16});
     settings_panel_.Visibility(Visibility::Collapsed);
-    AddRow(settings_panel_, 0, GridUnitType::Auto);
-    AddRow(settings_panel_, 1, GridUnitType::Star);
-    AddRow(settings_panel_, 0, GridUnitType::Auto);
     Grid::SetRow(settings_panel_, 2);
 
-    Grid settings_header;
-    AddColumn(settings_header, 1, GridUnitType::Star);
-    AddColumn(settings_header, 0, GridUnitType::Auto);
-    StackPanel settings_heading;
-    settings_title_ = Text(L"Настройки", 27, primary_text_brush);
-    settings_title_.FontWeight(Windows::UI::Text::FontWeights::Bold());
-    settings_subtitle_ = Text(L"Источник, качество и сохранение", 12.5, secondary_text_brush_);
-    settings_subtitle_.TextWrapping(TextWrapping::Wrap);
-    settings_subtitle_.Margin(Thickness{0, 5, 0, 0});
-    settings_heading.Children().Append(settings_title_);
-    settings_heading.Children().Append(settings_subtitle_);
-    settings_header.Children().Append(settings_heading);
-    back_button_ = controls.ActionButton(L"← Назад");
-    back_button_.Click({this, &MainWindow::BackButton_Click});
-    Grid::SetColumn(back_button_, 1);
-    settings_header.Children().Append(back_button_);
-    settings_panel_.Children().Append(settings_header);
-
     ScrollViewer settings_scroll;
-    settings_scroll.Margin(Thickness{0, 18, 0, 12});
     settings_scroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
     settings_scroll.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
-    Grid::SetRow(settings_scroll, 1);
     StackPanel form;
-    form.Spacing(12);
+    form.Padding(Thickness{0, 0, 0, 24});
+
+    Grid settings_header;
+    settings_header.Margin(Thickness{24, 24, 24, 0});
+    AddColumn(settings_header, 1, GridUnitType::Star);
+    AddColumn(settings_header, 0, GridUnitType::Auto);
+    settings_title_ = Text(L"Настройки", 30, primary_text_brush);
+    settings_title_.FontWeight(semibold);
+    settings_header.Children().Append(settings_title_);
+    StackPanel save_status;
+    save_status.Orientation(Orientation::Horizontal);
+    save_status.Spacing(6);
+    save_status.VerticalAlignment(VerticalAlignment::Center);
+    Border save_status_dot;
+    save_status_dot.Width(6);
+    save_status_dot.Height(6);
+    save_status_dot.CornerRadius(CornerRadius{3, 3, 3, 3});
+    save_status_dot.Background(accent_brush_);
+    save_status_dot.VerticalAlignment(VerticalAlignment::Center);
+    save_status.Children().Append(save_status_dot);
+    settings_save_status_ = Text(L"Changes save automatically", 12, muted_brush);
+    settings_save_status_.TextTrimming(TextTrimming::CharacterEllipsis);
+    settings_save_status_.MaxWidth(260);
+    save_status.Children().Append(settings_save_status_);
+    Grid::SetColumn(save_status, 1);
+    settings_header.Children().Append(save_status);
+    form.Children().Append(settings_header);
 
     const auto create_section = [&](TextBlock& heading, std::wstring_view title) {
-        Border surface;
-        surface.Background(card_brush);
-        surface.BorderBrush(card_border_brush);
-        surface.BorderThickness(Thickness{1, 1, 1, 1});
-        surface.CornerRadius(CornerRadius{8, 8, 8, 8});
-        surface.Padding(Thickness{16, 15, 16, 16});
-        surface.Shadow(Microsoft::UI::Xaml::Media::ThemeShadow{});
-        surface.Translation(Windows::Foundation::Numerics::float3{0.0f, 0.0f, 4.0f});
-
+        heading = Text(title, 11, faint_brush);
+        heading.CharacterSpacing(120);
+        heading.Margin(Thickness{28, 28, 28, 8});
+        form.Children().Append(heading);
         StackPanel content;
-        heading = Text(title, 12, accent_brush_);
-        heading.FontWeight(Windows::UI::Text::FontWeights::Bold());
-        heading.CharacterSpacing(70);
-        heading.Margin(Thickness{0, 0, 0, 13});
-        content.Children().Append(heading);
-        surface.Child(content);
-        form.Children().Append(surface);
+        content.Background(theme.card);
+        content.CornerRadius(CornerRadius{12, 12, 12, 12});
+        content.Margin(Thickness{16, 0, 16, 0});
+        content.Padding(Thickness{0, 4, 0, 4});
+        form.Children().Append(content);
         return content;
     };
 
-    const auto add_field = [&](StackPanel const& column, TextBlock& label, std::wstring_view text,
-                                 FrameworkElement const& control) {
-        label = Text(text, 12.5, secondary_text_brush_);
-        label.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-        label.Margin(Thickness{0, 0, 0, 6});
-        column.Children().Append(label);
-        control.Margin(Thickness{0, 0, 0, 14});
-        column.Children().Append(control);
+    // The group surface does the grouping, so rows inside it carry no dividers.
+    const auto group_row = [](UIElement const& child, Thickness padding = Thickness{16, 12, 16, 12}) {
+        Border row;
+        row.Padding(padding);
+        row.Child(child);
+        return row;
+    };
+
+    // Label (and optional hint) on the left, control on the right; wide controls go under the label.
+    const auto add_field = [&](StackPanel const& section, TextBlock& label, std::wstring_view text,
+                               FrameworkElement const& control, TextBlock const& hint = nullptr,
+                               bool wide = false) {
+        Grid row;
+        row.ColumnSpacing(14);
+        AddColumn(row, 1, GridUnitType::Star);
+        AddColumn(row, 0, GridUnitType::Auto);
+        StackPanel copy;
+        copy.VerticalAlignment(VerticalAlignment::Center);
+        label = Text(text, 14, primary_text_brush);
+        copy.Children().Append(label);
+        if (hint) {
+            hint.FontSize(12);
+            hint.Foreground(muted_brush);
+            hint.TextWrapping(TextWrapping::Wrap);
+            hint.Margin(Thickness{0, 3, 0, 0});
+            copy.Children().Append(hint);
+        }
+        row.Children().Append(copy);
+        if (wide) {
+            AddRow(row, 0, GridUnitType::Auto);
+            AddRow(row, 0, GridUnitType::Auto);
+            control.Margin(Thickness{0, 10, 0, 0});
+            Grid::SetRow(control, 1);
+            Grid::SetColumnSpan(control, 2);
+        } else {
+            control.MinWidth(150);
+            control.MaxWidth(260);
+            control.VerticalAlignment(VerticalAlignment::Center);
+            Grid::SetColumn(control, 1);
+        }
+        row.Children().Append(control);
+        section.Children().Append(group_row(row));
+    };
+
+    const auto add_toggle_row = [&](StackPanel const& section, TextBlock& label, std::wstring_view text,
+                                    ToggleSwitch const& toggle) {
+        Grid row;
+        AddColumn(row, 1, GridUnitType::Star);
+        AddColumn(row, 0, GridUnitType::Auto);
+        label = Text(text, 14, primary_text_brush);
+        label.TextWrapping(TextWrapping::Wrap);
+        label.VerticalAlignment(VerticalAlignment::Center);
+        row.Children().Append(label);
+        toggle.HorizontalAlignment(HorizontalAlignment::Right);
+        toggle.VerticalAlignment(VerticalAlignment::Center);
+        Grid::SetColumn(toggle, 1);
+        row.Children().Append(toggle);
+        section.Children().Append(group_row(row, Thickness{16, 12, 16, 12}));
+    };
+
+    const auto add_slider = [&](StackPanel const& section, TextBlock& label, std::wstring_view text,
+                                TextBlock& value, std::wstring_view initial, FrameworkElement const& slider) {
+        StackPanel block;
+        Grid top;
+        AddColumn(top, 1, GridUnitType::Star);
+        AddColumn(top, 0, GridUnitType::Auto);
+        label = Text(text, 14, primary_text_brush);
+        top.Children().Append(label);
+        value = Text(initial, 13.5, success_brush_);
+        value.FontWeight(Windows::UI::Text::FontWeights::Medium());
+        Grid::SetColumn(value, 1);
+        top.Children().Append(value);
+        block.Children().Append(top);
+        slider.Margin(Thickness{0, 2, 0, 0});
+        block.Children().Append(slider);
+        section.Children().Append(group_row(block, Thickness{16, 12, 16, 6}));
+    };
+
+    const auto style_expander = [&](Expander const& expander, Grid const& header_content) {
+        const auto resources = expander.Resources();
+        const auto set = [&](std::wstring_view key, IInspectable const& value) {
+            resources.Insert(winrt::box_value(winrt::hstring{key}), value);
+        };
+        set(L"ExpanderHeaderBackground", transparent_brush);
+        set(L"ExpanderHeaderBorderBrush", transparent_brush);
+        set(L"ExpanderHeaderBorderPointerOverBrush", transparent_brush);
+        set(L"ExpanderHeaderBorderPressedBrush", transparent_brush);
+        set(L"ExpanderHeaderBackgroundPointerOver", transparent_brush);
+        set(L"ExpanderHeaderBackgroundPressed", transparent_brush);
+        set(L"ExpanderContentBackground", transparent_brush);
+        set(L"ExpanderContentBorderBrush", transparent_brush);
+        set(L"ExpanderHeaderPadding", winrt::box_value(Thickness{16, 0, 10, 0}));
+        set(L"ExpanderContentPadding", winrt::box_value(Thickness{16, 4, 16, 14}));
+        set(L"ExpanderChevronForeground", faint_brush);
+        expander.Header(header_content);
+        expander.IsExpanded(false);
+        expander.MinHeight(58);
+        expander.CornerRadius(CornerRadius{0, 0, 0, 0});
+        expander.HorizontalAlignment(HorizontalAlignment::Stretch);
+        expander.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+    };
+    const auto expander_header = [&](TextBlock& label, std::wstring_view text, TextBlock& summary,
+                                     std::wstring_view summary_text) {
+        Grid content;
+        AddColumn(content, 1, GridUnitType::Star);
+        AddColumn(content, 0, GridUnitType::Auto);
+        label = Text(text, 14, primary_text_brush);
+        label.VerticalAlignment(VerticalAlignment::Center);
+        content.Children().Append(label);
+        summary = Text(summary_text, 12.5, muted_brush);
+        summary.VerticalAlignment(VerticalAlignment::Center);
+        summary.Margin(Thickness{10, 0, 4, 0});
+        Grid::SetColumn(summary, 1);
+        content.Children().Append(summary);
+        return content;
+    };
+    const auto add_expander = [&](StackPanel const& section, Expander const& expander) {
+        section.Children().Append(group_row(expander, Thickness{}));
     };
 
     const auto source_section = create_section(source_section_title_, L"ИСТОЧНИК");
@@ -601,112 +911,73 @@ void MainWindow::BuildUi() {
 
     const auto add_audio_devices = [&](Expander& expander, TextBlock& label, std::wstring_view text,
                                         TextBlock& summary, StackPanel& devices) {
-        label = Text(text, 12.5, secondary_text_brush_);
-        label.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-        Grid header;
-        AddColumn(header, 1, GridUnitType::Star);
-        AddColumn(header, 0, GridUnitType::Auto);
-        header.Children().Append(label);
-        summary = Text(L"1 выбрано", 11, success_brush_);
-        summary.VerticalAlignment(VerticalAlignment::Center);
-        summary.Margin(Thickness{10, 0, 4, 0});
-        Grid::SetColumn(summary, 1);
-        header.Children().Append(summary);
         devices = StackPanel{};
         devices.Spacing(8);
-        devices.Padding(Thickness{4, 6, 0, 8});
         devices.HorizontalAlignment(HorizontalAlignment::Stretch);
         expander = Expander{};
-        expander.Header(header);
+        style_expander(expander, expander_header(label, text, summary, L"1 выбрано"));
         expander.Content(devices);
-        expander.IsExpanded(false);
-        expander.HorizontalAlignment(HorizontalAlignment::Stretch);
-        expander.HorizontalContentAlignment(HorizontalAlignment::Stretch);
-        expander.Margin(Thickness{0, 0, 0, 8});
-        source_section.Children().Append(expander);
+        add_expander(source_section, expander);
     };
     add_audio_devices(desktop_audio_devices_expander_, desktop_audio_label_, L"Системный звук",
                       desktop_audio_summary_, desktop_audio_devices_panel_);
     add_audio_devices(microphone_devices_expander_, microphone_devices_label_, L"Микрофоны и входы",
                       microphone_audio_summary_, microphone_devices_panel_);
-    audio_devices_hint_ = Text(L"Можно выбрать несколько устройств, суммарно до 5 активных источников.", 11.5,
-                               secondary_text_brush_);
+    audio_devices_hint_ = Text(L"Можно выбрать несколько устройств, суммарно до 5 активных источников.", 12,
+                               muted_brush);
     audio_devices_hint_.TextWrapping(TextWrapping::Wrap);
-    source_section.Children().Append(audio_devices_hint_);
+    audio_devices_hint_.Margin(Thickness{28, 8, 28, 0});
+    form.Children().Append(audio_devices_hint_);
 
     const auto video_section = create_section(video_section_title_, L"ВИДЕО");
 
-    Grid duration_header;
-    AddColumn(duration_header, 1, GridUnitType::Star);
-    AddColumn(duration_header, 0, GridUnitType::Auto);
-    replay_duration_label_ = Text(L"Длительность повтора", 12, secondary_text_brush_);
-    replay_duration_label_.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-    duration_header.Children().Append(replay_duration_label_);
-    replay_duration_value_ = Text(L"60 сек", 12, success_brush_);
-    replay_duration_value_.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-    Grid::SetColumn(replay_duration_value_, 1);
-    duration_header.Children().Append(replay_duration_value_);
-    video_section.Children().Append(duration_header);
     auto replay_duration_control = controls.RangeSlider(15, 1200, 15, 60);
     replay_duration_slider_ = replay_duration_control.input;
     replay_duration_slider_.ValueChanged({this, &MainWindow::ReplayDurationSlider_ValueChanged});
-    auto replay_duration_slider_control = replay_duration_control.view;
-    replay_duration_slider_control.Margin(Thickness{0, 4, 0, 16});
-    video_section.Children().Append(replay_duration_slider_control);
+    add_slider(video_section, replay_duration_label_, L"Длительность повтора", replay_duration_value_, L"60 сек",
+               replay_duration_control.view);
 
     quality_selector_ = controls.Select();
     quality_selector_.Items().Append(controls.Option(L"Производительность"));
     quality_selector_.Items().Append(controls.Option(L"Сбалансированный"));
     quality_selector_.Items().Append(controls.Option(L"Высокое качество"));
     quality_selector_.SelectionChanged({this, &MainWindow::QualitySelector_SelectionChanged});
-    add_field(video_section, quality_label_, L"Пресет качества", quality_selector_);
-    quality_description_ = Text(L"Баланс качества сжатия и нагрузки на GPU. Битрейт задаётся отдельно.", 11.5,
-                                secondary_text_brush_);
-    quality_description_.TextWrapping(TextWrapping::Wrap);
-    quality_description_.Margin(Thickness{0, -8, 0, 14});
-    video_section.Children().Append(quality_description_);
-
-    Grid bitrate_header;
-    AddColumn(bitrate_header, 1, GridUnitType::Star);
-    AddColumn(bitrate_header, 0, GridUnitType::Auto);
-    bitrate_label_ = Text(L"Целевой битрейт", 12.5, secondary_text_brush_);
-    bitrate_label_.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-    bitrate_header.Children().Append(bitrate_label_);
-    bitrate_value_ = Text(L"24 Мбит/с", 12, success_brush_);
-    bitrate_value_.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-    Grid::SetColumn(bitrate_value_, 1);
-    bitrate_header.Children().Append(bitrate_value_);
-    video_section.Children().Append(bitrate_header);
+    quality_description_ = Text(L"Баланс качества сжатия и нагрузки на GPU. Битрейт задаётся отдельно.", 12,
+                                muted_brush);
+    add_field(video_section, quality_label_, L"Пресет качества", quality_selector_, quality_description_);
 
     auto bitrate_control = controls.RangeSlider(4, 120, 1, 24);
     bitrate_slider_ = bitrate_control.input;
     bitrate_slider_.ValueChanged({this, &MainWindow::BitrateSlider_ValueChanged});
-    auto bitrate_slider_control = bitrate_control.view;
-    bitrate_slider_control.Margin(Thickness{0, 4, 0, 16});
-    video_section.Children().Append(bitrate_slider_control);
+    add_slider(video_section, bitrate_label_, L"Целевой битрейт", bitrate_value_, L"24 Мбит/с",
+               bitrate_control.view);
 
     Border replay_estimate;
-    replay_estimate.Background(near_black_green_brush);
-    replay_estimate.BorderBrush(accent_dark_brush);
+    replay_estimate.Background(theme.inset);
+    replay_estimate.BorderBrush(theme.border);
     replay_estimate.BorderThickness(Thickness{1, 1, 1, 1});
-    replay_estimate.CornerRadius(CornerRadius{8, 8, 8, 8});
-    replay_estimate.Padding(Thickness{14, 12, 14, 12});
-    replay_estimate.Margin(Thickness{0, 0, 0, 16});
-    StackPanel estimate_content;
-    replay_size_label_ = Text(L"ОЦЕНКА ПОВТОРА", 11, success_brush_);
-    replay_size_label_.FontWeight(Windows::UI::Text::FontWeights::Bold());
-    replay_size_label_.CharacterSpacing(80);
-    estimate_content.Children().Append(replay_size_label_);
+    replay_estimate.CornerRadius(CornerRadius{10, 10, 10, 10});
+    replay_estimate.Padding(Thickness{16, 12, 16, 12});
+    replay_estimate.Margin(Thickness{16, 6, 16, 10});
+    Grid estimate_content;
+    estimate_content.ColumnSpacing(14);
+    AddColumn(estimate_content, 0, GridUnitType::Auto);
+    AddColumn(estimate_content, 1, GridUnitType::Star);
     replay_size_value_ = Text(L"≈ 181 МБ", 22, primary_text_brush);
-    replay_size_value_.FontWeight(Windows::UI::Text::FontWeights::Bold());
-    replay_size_value_.Margin(Thickness{0, 5, 0, 2});
+    replay_size_value_.FontWeight(semibold);
+    replay_size_value_.VerticalAlignment(VerticalAlignment::Center);
     estimate_content.Children().Append(replay_size_value_);
-    replay_size_detail_ = Text(L"60 сек · VBR 24 Мбит/с · 3 аудиодорожки · MKV", 11.5,
-                               secondary_text_brush_);
+    StackPanel estimate_copy;
+    estimate_copy.VerticalAlignment(VerticalAlignment::Center);
+    replay_size_label_ = Text(L"на один повтор", 12, muted_brush);
+    estimate_copy.Children().Append(replay_size_label_);
+    replay_size_detail_ = Text(L"60 сек · VBR 24 Мбит/с · 3 аудиодорожки · MKV", 12, secondary_text_brush_);
     replay_size_detail_.TextWrapping(TextWrapping::Wrap);
-    estimate_content.Children().Append(replay_size_detail_);
+    estimate_copy.Children().Append(replay_size_detail_);
+    Grid::SetColumn(estimate_copy, 1);
+    estimate_content.Children().Append(estimate_copy);
     replay_estimate.Child(estimate_content);
-    video_section.Children().Append(replay_estimate);
+    video_section.Children().Append(group_row(replay_estimate, Thickness{}));
 
     codec_selector_ = controls.Select();
     codec_selector_.Items().Append(controls.Option(L"H.264"));
@@ -729,180 +1000,112 @@ void MainWindow::BuildUi() {
     language_selector_.SelectionChanged([this](auto&&, auto&&) { ScheduleSettingsApply(); });
     add_field(input_section, language_label_, L"Язык", language_selector_);
 
-    const auto add_toggle_row = [&](TextBlock& label, std::wstring_view text, ToggleSwitch const& toggle) {
-        Grid row;
-        AddColumn(row, 1, GridUnitType::Star);
-        AddColumn(row, 0, GridUnitType::Auto);
-        row.Margin(Thickness{0, 1, 0, 13});
-        label = Text(text, 13, primary_text_brush);
-        label.VerticalAlignment(VerticalAlignment::Center);
-        row.Children().Append(label);
-        toggle.OnContent(winrt::box_value(L""));
-        toggle.OffContent(winrt::box_value(L""));
-        toggle.HorizontalAlignment(HorizontalAlignment::Right);
-        toggle.VerticalAlignment(VerticalAlignment::Center);
-        Grid::SetColumn(toggle, 1);
-        row.Children().Append(toggle);
-        input_section.Children().Append(row);
-    };
-
     microphone_toggle_ = controls.Toggle();
     microphone_toggle_.Toggled({this, &MainWindow::EstimateInput_Toggled});
-    add_toggle_row(microphone_label_, L"Микрофон", microphone_toggle_);
+    add_toggle_row(input_section, microphone_label_, L"Микрофон", microphone_toggle_);
     cursor_toggle_ = controls.Toggle();
-    add_toggle_row(cursor_label_, L"Захватывать курсор", cursor_toggle_);
+    add_toggle_row(input_section, cursor_label_, L"Захватывать курсор", cursor_toggle_);
     cursor_toggle_.Toggled([this](auto&&, auto&&) { ScheduleSettingsApply(); });
     start_with_windows_toggle_ = controls.Toggle();
-    add_toggle_row(start_with_windows_label_, L"Запускать вместе с Windows", start_with_windows_toggle_);
+    add_toggle_row(input_section, start_with_windows_label_, L"Запускать вместе с Windows",
+                   start_with_windows_toggle_);
     start_with_windows_toggle_.Toggled([this](auto&&, auto&&) { ScheduleSettingsApply(); });
-
-    Grid shortcuts_header;
-    AddColumn(shortcuts_header, 1, GridUnitType::Star);
-    AddColumn(shortcuts_header, 0, GridUnitType::Auto);
-    shortcuts_label_ = Text(L"Хоткеи", 12.5, secondary_text_brush_);
-    shortcuts_label_.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-    shortcuts_header.Children().Append(shortcuts_label_);
-    shortcuts_summary_ = Text(L"3 активны", 11, success_brush_);
-    shortcuts_summary_.Margin(Thickness{10, 0, 4, 0});
-    shortcuts_summary_.VerticalAlignment(VerticalAlignment::Center);
-    Grid::SetColumn(shortcuts_summary_, 1);
-    shortcuts_header.Children().Append(shortcuts_summary_);
 
     StackPanel shortcuts_content;
     shortcuts_content.Spacing(8);
-    shortcuts_content.Padding(Thickness{4, 6, 4, 8});
     shortcuts_content.HorizontalAlignment(HorizontalAlignment::Stretch);
     replay_hotkeys_panel_ = StackPanel{};
     replay_hotkeys_panel_.Spacing(8);
     shortcuts_content.Children().Append(replay_hotkeys_panel_);
     replay_hotkey_add_button_ = controls.ActionButton(L"+ Добавить хоткей");
-    replay_hotkey_add_button_.MinHeight(36);
     replay_hotkey_add_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
     replay_hotkey_add_button_.Click({this, &MainWindow::ReplayHotkeyAdd_Click});
     shortcuts_content.Children().Append(replay_hotkey_add_button_);
 
-    auto recording_shortcut_surface = controls.ShortcutSurface();
-    StackPanel recording_shortcut_block;
-    recording_shortcut_block.Spacing(10);
-    Grid recording_shortcut_header;
-    recording_shortcut_header.Height(20);
-    AddColumn(recording_shortcut_header, 1, GridUnitType::Star);
-    AddColumn(recording_shortcut_header, 0, GridUnitType::Auto);
-    recording_hotkey_label_ = Text(L"Запись сессии", 12.5, primary_text_brush);
-    recording_hotkey_label_.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-    recording_hotkey_label_.VerticalAlignment(VerticalAlignment::Center);
-    recording_shortcut_header.Children().Append(recording_hotkey_label_);
-    recording_hotkey_toggle_ = controls.Toggle();
-    recording_hotkey_toggle_.VerticalAlignment(VerticalAlignment::Center);
-    recording_hotkey_toggle_.Toggled([this](auto&&, auto&&) {
-        if (updating_ui_) return;
-        ValidateHotkeys(true, false);
-        ScheduleSettingsApply();
-    });
-    Grid::SetColumn(recording_hotkey_toggle_, 1);
-    recording_shortcut_header.Children().Append(recording_hotkey_toggle_);
-    recording_shortcut_block.Children().Append(recording_shortcut_header);
-    recording_hotkey_input_ = controls.HotkeyInput(L"Нажмите сочетание");
+    const auto add_shortcut_block = [&](TextBlock& label, std::wstring_view text, ToggleSwitch& toggle,
+                                        TextBox& input, TextBlock& validation) {
+        auto surface = controls.ShortcutSurface();
+        StackPanel block;
+        block.Spacing(10);
+        Grid block_header;
+        block_header.Height(20);
+        AddColumn(block_header, 1, GridUnitType::Star);
+        AddColumn(block_header, 0, GridUnitType::Auto);
+        label = Text(text, 13, primary_text_brush);
+        label.VerticalAlignment(VerticalAlignment::Center);
+        block_header.Children().Append(label);
+        toggle = controls.Toggle();
+        toggle.VerticalAlignment(VerticalAlignment::Center);
+        toggle.Toggled([this](auto&&, auto&&) {
+            if (updating_ui_) return;
+            ValidateHotkeys(true, false);
+            ScheduleSettingsApply();
+        });
+        Grid::SetColumn(toggle, 1);
+        block_header.Children().Append(toggle);
+        block.Children().Append(block_header);
+        input = controls.HotkeyInput(L"Нажмите сочетание");
+        input.LostFocus([this](auto&&, auto&&) {
+            ValidateHotkeys(true, false);
+            ScheduleSettingsApply();
+        });
+        block.Children().Append(input);
+        validation = Text(L"", 10.5, danger_brush_);
+        validation.TextWrapping(TextWrapping::Wrap);
+        validation.Visibility(Visibility::Collapsed);
+        block.Children().Append(validation);
+        surface.Child(block);
+        shortcuts_content.Children().Append(surface);
+    };
+    add_shortcut_block(recording_hotkey_label_, L"Запись сессии", recording_hotkey_toggle_,
+                       recording_hotkey_input_, recording_hotkey_validation_);
     recording_hotkey_input_.KeyDown({this, &MainWindow::RecordingHotkey_KeyDown});
-    recording_hotkey_input_.LostFocus([this](auto&&, auto&&) {
-        ValidateHotkeys(true, false);
-        ScheduleSettingsApply();
-    });
-    recording_shortcut_block.Children().Append(recording_hotkey_input_);
-    recording_hotkey_validation_ = Text(L"", 10.5, danger_brush_);
-    recording_hotkey_validation_.TextWrapping(TextWrapping::Wrap);
-    recording_hotkey_validation_.Visibility(Visibility::Collapsed);
-    recording_shortcut_block.Children().Append(recording_hotkey_validation_);
-    recording_shortcut_surface.Child(recording_shortcut_block);
-    shortcuts_content.Children().Append(recording_shortcut_surface);
-
-    auto screenshot_surface = controls.ShortcutSurface();
-    StackPanel screenshot_block;
-    screenshot_block.Spacing(10);
-    Grid screenshot_shortcut_header;
-    screenshot_shortcut_header.Height(20);
-    AddColumn(screenshot_shortcut_header, 1, GridUnitType::Star);
-    AddColumn(screenshot_shortcut_header, 0, GridUnitType::Auto);
-    screenshot_hotkey_label_ = Text(L"Снимок экрана", 12.5, primary_text_brush);
-    screenshot_hotkey_label_.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-    screenshot_hotkey_label_.VerticalAlignment(VerticalAlignment::Center);
-    screenshot_shortcut_header.Children().Append(screenshot_hotkey_label_);
-    screenshot_hotkey_toggle_ = controls.Toggle();
-    screenshot_hotkey_toggle_.VerticalAlignment(VerticalAlignment::Center);
-    screenshot_hotkey_toggle_.Toggled([this](auto&&, auto&&) {
-        if (updating_ui_) return;
-        ValidateHotkeys(true, false);
-        ScheduleSettingsApply();
-    });
-    Grid::SetColumn(screenshot_hotkey_toggle_, 1);
-    screenshot_shortcut_header.Children().Append(screenshot_hotkey_toggle_);
-    screenshot_block.Children().Append(screenshot_shortcut_header);
-    screenshot_hotkey_input_ = controls.HotkeyInput(L"Нажмите сочетание");
+    add_shortcut_block(screenshot_hotkey_label_, L"Снимок экрана", screenshot_hotkey_toggle_,
+                       screenshot_hotkey_input_, screenshot_hotkey_validation_);
     screenshot_hotkey_input_.KeyDown({this, &MainWindow::ScreenshotHotkey_KeyDown});
-    screenshot_hotkey_input_.LostFocus([this](auto&&, auto&&) {
-        ValidateHotkeys(true, false);
-        ScheduleSettingsApply();
-    });
-    screenshot_block.Children().Append(screenshot_hotkey_input_);
-    screenshot_hotkey_validation_ = Text(L"", 10.5, danger_brush_);
-    screenshot_hotkey_validation_.TextWrapping(TextWrapping::Wrap);
-    screenshot_hotkey_validation_.Visibility(Visibility::Collapsed);
-    screenshot_block.Children().Append(screenshot_hotkey_validation_);
-    screenshot_surface.Child(screenshot_block);
-    shortcuts_content.Children().Append(screenshot_surface);
 
     shortcuts_expander_ = Expander{};
-    shortcuts_expander_.Header(shortcuts_header);
+    style_expander(shortcuts_expander_, expander_header(shortcuts_label_, L"Хоткеи", shortcuts_summary_, L"3 активны"));
     shortcuts_expander_.Content(shortcuts_content);
-    shortcuts_expander_.IsExpanded(false);
-    shortcuts_expander_.HorizontalAlignment(HorizontalAlignment::Stretch);
-    shortcuts_expander_.HorizontalContentAlignment(HorizontalAlignment::Stretch);
-    shortcuts_expander_.Margin(Thickness{0, 4, 0, 0});
-    input_section.Children().Append(shortcuts_expander_);
-
-    Grid performance_header;
-    AddColumn(performance_header, 1, GridUnitType::Star);
-    AddColumn(performance_header, 0, GridUnitType::Auto);
-    performance_overlay_label_ = Text(L"Оверлей производительности", 12.5, secondary_text_brush_);
-    performance_overlay_label_.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-    performance_header.Children().Append(performance_overlay_label_);
-    performance_overlay_summary_ = Text(L"Alt+R · 11 метрик", 11, success_brush_);
-    performance_overlay_summary_.Margin(Thickness{10, 0, 4, 0});
-    performance_overlay_summary_.VerticalAlignment(VerticalAlignment::Center);
-    Grid::SetColumn(performance_overlay_summary_, 1);
-    performance_header.Children().Append(performance_overlay_summary_);
+    add_expander(input_section, shortcuts_expander_);
 
     StackPanel performance_content;
-    performance_content.Spacing(8);
-    performance_content.Padding(Thickness{4, 6, 0, 8});
+    performance_content.Spacing(10);
     performance_content.HorizontalAlignment(HorizontalAlignment::Stretch);
-    Grid position_row;
-    AddColumn(position_row, 1, GridUnitType::Star);
-    AddColumn(position_row, 160, GridUnitType::Pixel);
-    performance_position_label_ = Text(L"Положение", 12, primary_text_brush);
-    performance_position_label_.VerticalAlignment(VerticalAlignment::Center);
-    position_row.Children().Append(performance_position_label_);
-    performance_position_selector_ = controls.Select();
+    const auto performance_option = [&](TextBlock& label, std::wstring_view text, ComboBox& selector) {
+        Grid row;
+        AddColumn(row, 1, GridUnitType::Star);
+        AddColumn(row, 170, GridUnitType::Pixel);
+        label = Text(text, 13, primary_text_brush);
+        label.VerticalAlignment(VerticalAlignment::Center);
+        row.Children().Append(label);
+        selector = controls.Select();
+        selector.SelectionChanged([this](auto&&, auto&&) { ScheduleSettingsApply(); });
+        Grid::SetColumn(selector, 1);
+        row.Children().Append(selector);
+        performance_content.Children().Append(row);
+    };
+    performance_option(performance_position_label_, L"Положение", performance_position_selector_);
     performance_position_selector_.Items().Append(controls.Option(L"Справа сверху"));
     performance_position_selector_.Items().Append(controls.Option(L"Справа снизу"));
     performance_position_selector_.SelectedIndex(0);
-    performance_position_selector_.SelectionChanged([this](auto&&, auto&&) { ScheduleSettingsApply(); });
-    Grid::SetColumn(performance_position_selector_, 1);
-    position_row.Children().Append(performance_position_selector_);
-    performance_content.Children().Append(position_row);
+    performance_option(performance_graph_style_label_, L"График времени кадра", performance_graph_style_selector_);
+    performance_graph_style_selector_.Items().Append(controls.Option(L"Столбики"));
+    performance_graph_style_selector_.Items().Append(controls.Option(L"Линия"));
+    performance_graph_style_selector_.SelectedIndex(0);
 
     Grid opacity_header;
     AddColumn(opacity_header, 1, GridUnitType::Star);
     AddColumn(opacity_header, 0, GridUnitType::Auto);
-    performance_opacity_label_ = Text(L"Прозрачность фона", 12, primary_text_brush);
+    performance_opacity_label_ = Text(L"Прозрачность фона", 13, primary_text_brush);
     opacity_header.Children().Append(performance_opacity_label_);
-    performance_opacity_value_ = Text(L"92%", 11.5, success_brush_);
+    performance_opacity_value_ = Text(L"92%", 12.5, success_brush_);
     Grid::SetColumn(performance_opacity_value_, 1);
     opacity_header.Children().Append(performance_opacity_value_);
     performance_content.Children().Append(opacity_header);
     auto performance_opacity_control = controls.RangeSlider(55, 100, 1, 92);
     performance_opacity_slider_ = performance_opacity_control.input;
-    performance_opacity_control.view.Margin(Thickness{0, 0, 0, 2});
+    performance_opacity_control.view.Margin(Thickness{0, -6, 0, 2});
     performance_opacity_slider_.ValueChanged([this](auto&&, auto const& args) {
         if (performance_opacity_value_) {
             performance_opacity_value_.Text(std::to_wstring(static_cast<unsigned int>(std::lround(args.NewValue()))) + L"%");
@@ -912,7 +1115,7 @@ void MainWindow::BuildUi() {
     performance_content.Children().Append(performance_opacity_control.view);
 
     const auto metric_check = [&](const StackPanel& parent, std::wstring_view label, CheckBox& target) {
-        target = controls.Check(label);
+        target = controls.Check(label, true, 12.5);
         target.Click([this](auto&&, auto&&) {
             UpdatePerformanceOverlaySummary();
             ScheduleSettingsApply();
@@ -923,9 +1126,7 @@ void MainWindow::BuildUi() {
     AddColumn(performance_metrics, 1, GridUnitType::Star);
     AddColumn(performance_metrics, 1, GridUnitType::Star);
     StackPanel gpu_metrics;
-    gpu_metrics.Spacing(2);
     StackPanel system_metrics;
-    system_metrics.Spacing(2);
     metric_check(gpu_metrics, L"FPS", performance_fps_);
     metric_check(gpu_metrics, L"1% / 0.1% FPS", performance_fps_lows_);
     metric_check(gpu_metrics, L"Время кадра", performance_frametime_);
@@ -943,13 +1144,11 @@ void MainWindow::BuildUi() {
     performance_content.Children().Append(performance_metrics);
 
     performance_overlay_expander_ = Expander{};
-    performance_overlay_expander_.Header(performance_header);
+    style_expander(performance_overlay_expander_,
+                   expander_header(performance_overlay_label_, L"Оверлей производительности",
+                                   performance_overlay_summary_, L"Alt+R · 11 метрик"));
     performance_overlay_expander_.Content(performance_content);
-    performance_overlay_expander_.IsExpanded(false);
-    performance_overlay_expander_.HorizontalAlignment(HorizontalAlignment::Stretch);
-    performance_overlay_expander_.HorizontalContentAlignment(HorizontalAlignment::Stretch);
-    performance_overlay_expander_.Margin(Thickness{0, 8, 0, 0});
-    input_section.Children().Append(performance_overlay_expander_);
+    add_expander(input_section, performance_overlay_expander_);
 
     const auto storage_section = create_section(storage_section_title_, L"ХРАНИЛИЩЕ");
 
@@ -957,128 +1156,83 @@ void MainWindow::BuildUi() {
     output_format_selector_.Items().Append(controls.Option(L"MKV"));
     output_format_selector_.Items().Append(controls.Option(L"MP4"));
     output_format_selector_.SelectionChanged({this, &MainWindow::OutputFormatSelector_SelectionChanged});
-    add_field(storage_section, output_format_label_, L"Формат видео", output_format_selector_);
-    output_format_description_ = Text(L"Широко совместим с приложениями и видеоредакторами.", 11.5,
-                                       secondary_text_brush_);
-    output_format_description_.TextWrapping(TextWrapping::Wrap);
-    output_format_description_.Margin(Thickness{0, -8, 0, 14});
-    storage_section.Children().Append(output_format_description_);
+    output_format_description_ = Text(L"Широко совместим с приложениями и видеоредакторами.", 12, muted_brush);
+    add_field(storage_section, output_format_label_, L"Формат видео", output_format_selector_,
+              output_format_description_);
 
-    Border output_surface;
-    output_surface.Height(40);
-    output_surface.Background(card_hover_brush);
-    output_surface.BorderBrush(card_border_brush);
-    output_surface.BorderThickness(Thickness{1, 1, 1, 1});
-    output_surface.CornerRadius(CornerRadius{8, 8, 8, 8});
-    output_surface.Padding(Thickness{12, 0, 12, 0});
-    output_directory_text_ = Text(L"", 12, primary_text_brush);
-    output_directory_text_.VerticalAlignment(VerticalAlignment::Center);
+    Grid output_row;
+    output_row.ColumnSpacing(8);
+    AddColumn(output_row, 1, GridUnitType::Star);
+    AddColumn(output_row, 0, GridUnitType::Auto);
+    AddColumn(output_row, 0, GridUnitType::Auto);
+    StackPanel output_copy;
+    output_copy.VerticalAlignment(VerticalAlignment::Center);
+    output_label_ = Text(L"Папка сохранения", 14, primary_text_brush);
+    output_copy.Children().Append(output_label_);
+    output_directory_text_ = Text(L"", 12, muted_brush);
+    output_directory_text_.Margin(Thickness{0, 3, 0, 0});
     output_directory_text_.TextTrimming(TextTrimming::CharacterEllipsis);
     output_directory_text_.TextWrapping(TextWrapping::NoWrap);
-    output_surface.Child(output_directory_text_);
-    add_field(storage_section, output_label_, L"Папка сохранения", output_surface);
-    storage_space_text_ = Text(L"Свободно: проверка...", 11.5, secondary_text_brush_);
-    storage_space_text_.Margin(Thickness{0, -8, 0, 14});
-    storage_section.Children().Append(storage_space_text_);
+    output_copy.Children().Append(output_directory_text_);
+    storage_space_text_ = Text(L"Свободно: проверка...", 12, muted_brush);
+    storage_space_text_.Margin(Thickness{0, 2, 0, 0});
+    output_copy.Children().Append(storage_space_text_);
+    output_row.Children().Append(output_copy);
     open_folder_button_ = controls.ActionButton(L"Открыть папку");
-    open_folder_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
+    open_folder_button_.VerticalAlignment(VerticalAlignment::Center);
     open_folder_button_.Click({this, &MainWindow::OpenFolder_Click});
+    Grid::SetColumn(open_folder_button_, 1);
+    output_row.Children().Append(open_folder_button_);
     open_logs_button_ = controls.ActionButton(L"Открыть логи");
-    open_logs_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
+    open_logs_button_.VerticalAlignment(VerticalAlignment::Center);
     open_logs_button_.Click({this, &MainWindow::OpenLogs_Click});
-    Grid storage_actions;
-    AddColumn(storage_actions, 1, GridUnitType::Star);
-    AddColumn(storage_actions, 1, GridUnitType::Star);
-    open_folder_button_.Margin(Thickness{0, 0, 6, 0});
-    open_logs_button_.Margin(Thickness{6, 0, 0, 0});
-    storage_actions.Children().Append(open_folder_button_);
-    Grid::SetColumn(open_logs_button_, 1);
-    storage_actions.Children().Append(open_logs_button_);
-    storage_section.Children().Append(storage_actions);
+    Grid::SetColumn(open_logs_button_, 2);
+    output_row.Children().Append(open_logs_button_);
+    storage_section.Children().Append(group_row(output_row));
 
     const auto discord_section = create_section(discord_section_title_, L"DISCORD SHARE");
-    discord_status_text_ = Text(L"Webhook is not configured", 11.5, secondary_text_brush_);
-    discord_status_text_.TextWrapping(TextWrapping::Wrap);
-    discord_status_text_.Margin(Thickness{0, 0, 0, 12});
-    discord_section.Children().Append(discord_status_text_);
-
     discord_webhook_input_ = controls.SecretInput(L"https://discord.com/api/webhooks/...");
     discord_webhook_input_.PasswordChanged([this](auto&&, auto&&) { UpdateDiscordUi(); });
-    add_field(discord_section, discord_webhook_label_, L"Webhook URL", discord_webhook_input_);
-
-    discord_size_input_ = controls.NumberInput(5, 500, 1);
-    discord_size_input_.ValueChanged([this](auto&&, auto&&) { ScheduleSettingsApply(); });
-    add_field(discord_section, discord_size_label_, L"Maximum upload size, MiB", discord_size_input_);
-
-    Grid discord_auto_send_row;
-    AddColumn(discord_auto_send_row, 1, GridUnitType::Star);
-    AddColumn(discord_auto_send_row, 0, GridUnitType::Auto);
-    discord_auto_send_row.Margin(Thickness{0, 0, 0, 12});
-    discord_auto_send_label_ = Text(L"Send automatically after saving", 12.5, primary_text_brush);
-    discord_auto_send_label_.VerticalAlignment(VerticalAlignment::Center);
-    discord_auto_send_row.Children().Append(discord_auto_send_label_);
-    discord_auto_send_toggle_ = controls.Toggle();
-    discord_auto_send_toggle_.HorizontalAlignment(HorizontalAlignment::Right);
-    discord_auto_send_toggle_.Toggled([this](auto&&, auto&&) { ScheduleSettingsApply(); });
-    Grid::SetColumn(discord_auto_send_toggle_, 1);
-    discord_auto_send_row.Children().Append(discord_auto_send_toggle_);
-    discord_section.Children().Append(discord_auto_send_row);
+    discord_status_text_ = Text(L"Webhook is not configured", 12, muted_brush);
+    add_field(discord_section, discord_webhook_label_, L"Webhook URL", discord_webhook_input_,
+              discord_status_text_, true);
 
     StackPanel discord_actions;
     discord_actions.Orientation(Orientation::Horizontal);
     discord_actions.Spacing(8);
     discord_actions.HorizontalAlignment(HorizontalAlignment::Right);
-    discord_save_button_ = controls.ActionButton(L"Save webhook", ButtonKind::Accent);
-    discord_save_button_.Click({this, &MainWindow::SaveDiscordWebhook_Click});
-    discord_actions.Children().Append(discord_save_button_);
+    discord_clear_button_ = controls.ActionButton(L"Remove webhook");
+    discord_clear_button_.Click({this, &MainWindow::ClearDiscordWebhook_Click});
+    discord_actions.Children().Append(discord_clear_button_);
     discord_test_button_ = controls.ActionButton(L"Test");
     discord_test_button_.Click({this, &MainWindow::TestDiscordWebhook_Click});
     discord_actions.Children().Append(discord_test_button_);
-    discord_section.Children().Append(discord_actions);
-    discord_clear_button_ = controls.ActionButton(L"Remove webhook");
-    discord_clear_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
-    discord_clear_button_.Margin(Thickness{0, 8, 0, 0});
-    discord_clear_button_.Click({this, &MainWindow::ClearDiscordWebhook_Click});
-    discord_section.Children().Append(discord_clear_button_);
+    discord_save_button_ = controls.ActionButton(L"Save webhook", ButtonKind::Accent);
+    discord_save_button_.Click({this, &MainWindow::SaveDiscordWebhook_Click});
+    discord_actions.Children().Append(discord_save_button_);
+    discord_section.Children().Append(group_row(discord_actions, Thickness{16, 6, 16, 12}));
+
+    discord_size_input_ = controls.NumberInput(5, 500, 1);
+    discord_size_input_.ValueChanged([this](auto&&, auto&&) { ScheduleSettingsApply(); });
+    add_field(discord_section, discord_size_label_, L"Maximum upload size, MiB", discord_size_input_);
+
+    discord_auto_send_toggle_ = controls.Toggle();
+    discord_auto_send_toggle_.Toggled([this](auto&&, auto&&) { ScheduleSettingsApply(); });
+    add_toggle_row(discord_section, discord_auto_send_label_, L"Send automatically after saving",
+                   discord_auto_send_toggle_);
 
     const auto updates_section = create_section(updates_section_title_, L"UPDATES");
-    update_version_text_ = Text(L"OpenReplay " + openreplay::FromUtf8(openreplay::kVersion) +
-                                    (openreplay::kReleaseChannel == "dev" ? L" · Dev" : L" · Stable"),
-                                13, primary_text_brush);
-    update_version_text_.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-    updates_section.Children().Append(update_version_text_);
-    update_status_text_ = Text(L"Updates are checked in the background.", 11.5, secondary_text_brush_);
-    update_status_text_.TextWrapping(TextWrapping::Wrap);
-    update_status_text_.Margin(Thickness{0, 5, 0, 12});
-    updates_section.Children().Append(update_status_text_);
 
-    Grid automatic_updates_row;
-    AddColumn(automatic_updates_row, 1, GridUnitType::Star);
-    AddColumn(automatic_updates_row, 0, GridUnitType::Auto);
-    automatic_updates_row.Margin(Thickness{0, 0, 0, 12});
-    automatic_updates_label_ = Text(L"Check and download automatically", 12.5, primary_text_brush);
-    automatic_updates_label_.VerticalAlignment(VerticalAlignment::Center);
-    automatic_updates_row.Children().Append(automatic_updates_label_);
     automatic_updates_toggle_ = controls.Toggle();
-    automatic_updates_toggle_.HorizontalAlignment(HorizontalAlignment::Right);
     automatic_updates_toggle_.Toggled([this](auto&&, auto&&) {
         if (updating_ui_) return;
         ScheduleSettingsApply();
         if (automatic_updates_toggle_.IsOn()) CheckForUpdatesAsync(false, true);
     });
-    Grid::SetColumn(automatic_updates_toggle_, 1);
-    automatic_updates_row.Children().Append(automatic_updates_toggle_);
-    updates_section.Children().Append(automatic_updates_row);
+    add_toggle_row(updates_section, automatic_updates_label_, L"Check and download automatically",
+                   automatic_updates_toggle_);
 
-    Grid developer_updates_row;
-    AddColumn(developer_updates_row, 1, GridUnitType::Star);
-    AddColumn(developer_updates_row, 0, GridUnitType::Auto);
-    developer_updates_row.Margin(Thickness{0, 0, 0, 12});
-    developer_updates_label_ = Text(L"Receive developer builds", 12.5, primary_text_brush);
-    developer_updates_label_.VerticalAlignment(VerticalAlignment::Center);
-    developer_updates_row.Children().Append(developer_updates_label_);
     developer_updates_toggle_ = controls.Toggle();
-    developer_updates_toggle_.HorizontalAlignment(HorizontalAlignment::Right);
     developer_updates_toggle_.Toggled([this](auto&&, auto&&) {
         if (updating_ui_) return;
         available_update_ = {};
@@ -1087,53 +1241,55 @@ void MainWindow::BuildUi() {
         UpdateUpdateUi();
         if (automatic_updates_toggle_.IsOn()) CheckForUpdatesAsync(false, true);
     });
-    Grid::SetColumn(developer_updates_toggle_, 1);
-    developer_updates_row.Children().Append(developer_updates_toggle_);
-    updates_section.Children().Append(developer_updates_row);
+    add_toggle_row(updates_section, developer_updates_label_, L"Receive developer builds",
+                   developer_updates_toggle_);
 
-    Grid update_actions;
-    AddColumn(update_actions, 1, GridUnitType::Star);
-    AddColumn(update_actions, 1, GridUnitType::Star);
+    Grid update_row;
+    update_row.ColumnSpacing(8);
+    AddColumn(update_row, 1, GridUnitType::Star);
+    AddColumn(update_row, 0, GridUnitType::Auto);
+    StackPanel update_copy;
+    update_copy.VerticalAlignment(VerticalAlignment::Center);
+    update_version_text_ = Text(L"OpenReplay " + openreplay::FromUtf8(openreplay::kVersion) +
+                                    (openreplay::kReleaseChannel == "dev" ? L" · Dev" : L" · Stable"),
+                                14, primary_text_brush);
+    update_copy.Children().Append(update_version_text_);
+    update_status_text_ = Text(L"Updates are checked in the background.", 12, muted_brush);
+    update_status_text_.TextWrapping(TextWrapping::Wrap);
+    update_status_text_.Margin(Thickness{0, 3, 0, 0});
+    update_copy.Children().Append(update_status_text_);
+    update_row.Children().Append(update_copy);
+    StackPanel update_actions;
+    update_actions.Spacing(6);
+    update_actions.VerticalAlignment(VerticalAlignment::Center);
     check_update_button_ = controls.ActionButton(L"Check now");
-    check_update_button_.Margin(Thickness{0, 0, 6, 0});
+    check_update_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
     check_update_button_.Click({this, &MainWindow::CheckUpdate_Click});
     update_actions.Children().Append(check_update_button_);
     update_action_button_ = controls.ActionButton(L"Download update", ButtonKind::Accent);
-    update_action_button_.Margin(Thickness{6, 0, 0, 0});
+    update_action_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
     update_action_button_.Visibility(Visibility::Collapsed);
     update_action_button_.Click({this, &MainWindow::UpdateAction_Click});
-    Grid::SetColumn(update_action_button_, 1);
     update_actions.Children().Append(update_action_button_);
-    updates_section.Children().Append(update_actions);
     release_notes_button_ = controls.ActionButton(L"Release notes");
     release_notes_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
-    release_notes_button_.Margin(Thickness{0, 8, 0, 0});
     release_notes_button_.Visibility(Visibility::Collapsed);
     release_notes_button_.Click({this, &MainWindow::OpenReleaseNotes_Click});
-    updates_section.Children().Append(release_notes_button_);
+    update_actions.Children().Append(release_notes_button_);
+    Grid::SetColumn(update_actions, 1);
+    update_row.Children().Append(update_actions);
+    updates_section.Children().Append(group_row(update_row, Thickness{16, 12, 16, 12}));
 
     settings_scroll.Content(form);
     settings_panel_.Children().Append(settings_scroll);
-
-    Border save_status_surface;
-    save_status_surface.Background(near_black_green_brush);
-    save_status_surface.BorderBrush(accent_dark_brush);
-    save_status_surface.BorderThickness(Thickness{1, 1, 1, 1});
-    save_status_surface.CornerRadius(CornerRadius{8, 8, 8, 8});
-    save_status_surface.Padding(Thickness{12, 9, 12, 9});
-    settings_save_status_ = Text(L"Changes save automatically", 11.5, success_brush_);
-    settings_save_status_.HorizontalAlignment(HorizontalAlignment::Center);
-    save_status_surface.Child(settings_save_status_);
-    Grid::SetRow(save_status_surface, 2);
-    settings_panel_.Children().Append(save_status_surface);
     layout.Children().Append(settings_panel_);
 
     Grid footer;
-    footer.Padding(Thickness{20, 0, 20, 0});
-    footer.Background(panel_brush);
+    footer.Padding(Thickness{24, 0, 24, 0});
+    footer.BorderBrush(line_brush);
+    footer.BorderThickness(Thickness{0, 1, 0, 0});
     Grid::SetRow(footer, 3);
-    hint_text_ = Text(L"ALT + Z   ЗАКРЫТЬ ПАНЕЛЬ", 11, muted_brush);
-    hint_text_.CharacterSpacing(45);
+    hint_text_ = Text(L"Alt+Z — скрыть панель", 11.5, faint_brush);
     hint_text_.VerticalAlignment(VerticalAlignment::Center);
     footer.Children().Append(hint_text_);
     layout.Children().Append(footer);
@@ -1164,6 +1320,9 @@ void MainWindow::InitializeWindow() {
     performance_overlay_.Initialize(window);
     AddTrayIcon();
     InitializeNotificationWindow();
+    ShowWindow(window, SW_HIDE);
+    Microsoft::UI::Xaml::Window xaml_window = *this;
+    xaml_window.AppWindow().Hide();
 
     if (!hotkey_registered_) {
         ShowNotification(L"Alt+Z уже используется другим приложением. Закройте NVIDIA Overlay или измените его сочетание.", true);
@@ -1171,6 +1330,14 @@ void MainWindow::InitializeWindow() {
     if (!performance_hotkey_registered_) {
         ShowNotification(L"Alt+R уже используется другим приложением. Отключите конфликтующий performance overlay.", true);
     }
+}
+
+void MainWindow::HideOnLaunch() {
+    visible_ = false;
+    const auto window_handle = GetWindowHandle();
+    ShowWindow(window_handle, SW_HIDE);
+    Microsoft::UI::Xaml::Window window = *this;
+    window.AppWindow().Hide();
 }
 
 void MainWindow::UnregisterConfigurableHotkeys() noexcept {
@@ -1287,8 +1454,7 @@ void MainWindow::RebuildReplayHotkeyRows() {
         AddColumn(header, 0, GridUnitType::Auto);
         AddColumn(header, 8, GridUnitType::Pixel);
         AddColumn(header, 20, GridUnitType::Pixel);
-        auto label = Text((english_ ? L"Replay " : L"Повтор ") + std::to_wstring(index + 1), 12.5, primary);
-        label.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
+        auto label = Text((english_ ? L"Replay " : L"Повтор ") + std::to_wstring(index + 1), 13, primary);
         label.VerticalAlignment(VerticalAlignment::Center);
         header.Children().Append(label);
         replay_hotkey_labels_.push_back(label);
@@ -1367,6 +1533,7 @@ void MainWindow::RebuildReplayHotkeyRows() {
 }
 
 bool MainWindow::ValidateHotkeys(bool check_system_conflicts, bool show_notification) {
+    const auto normal_border = DarkTheme().control_border;
     const auto bindings = ReplayHotkeysFromControls();
     std::unordered_set<std::string> chords;
     bool valid = true;
@@ -1393,7 +1560,7 @@ bool MainWindow::ValidateHotkeys(bool check_system_conflicts, bool show_notifica
         }
         replay_hotkey_validation_[index].Text(error);
         replay_hotkey_validation_[index].Visibility(error.empty() ? Visibility::Collapsed : Visibility::Visible);
-        replay_hotkey_inputs_[index].BorderBrush(error.empty() ? Brush(0xFF3F3F46) : danger_brush_);
+        replay_hotkey_inputs_[index].BorderBrush(error.empty() ? normal_border : danger_brush_);
         valid = valid && error.empty();
     }
 
@@ -1421,7 +1588,7 @@ bool MainWindow::ValidateHotkeys(bool check_system_conflicts, bool show_notifica
         screenshot_hotkey_validation_.Text(screenshot_error);
         screenshot_hotkey_validation_.Visibility(
             screenshot_error.empty() ? Visibility::Collapsed : Visibility::Visible);
-        screenshot_hotkey_input_.BorderBrush(screenshot_error.empty() ? Brush(0xFF3F3F46) : danger_brush_);
+        screenshot_hotkey_input_.BorderBrush(screenshot_error.empty() ? normal_border : danger_brush_);
     }
     valid = valid && screenshot_error.empty();
 
@@ -1450,7 +1617,7 @@ bool MainWindow::ValidateHotkeys(bool check_system_conflicts, bool show_notifica
         recording_hotkey_validation_.Text(recording_error);
         recording_hotkey_validation_.Visibility(
             recording_error.empty() ? Visibility::Collapsed : Visibility::Visible);
-        recording_hotkey_input_.BorderBrush(recording_error.empty() ? Brush(0xFF3F3F46) : danger_brush_);
+        recording_hotkey_input_.BorderBrush(recording_error.empty() ? normal_border : danger_brush_);
     }
     valid = valid && recording_error.empty();
 
@@ -1515,6 +1682,10 @@ bool MainWindow::ValidateHotkeys(bool check_system_conflicts, bool show_notifica
 
 void MainWindow::RequestReplaySave(std::uint32_t replay_seconds) {
     replay_save_pending_ = true;
+    DWORD process_id = 0;
+    const auto foreground = GetForegroundWindow();
+    GetWindowThreadProcessId(foreground, &process_id);
+    replay_game_ = GameNameOf(process_id == GetCurrentProcessId() ? last_external_window_ : foreground);
     const auto duration = std::to_wstring(replay_seconds);
     ShowToast(english_ ? L"Saving replay" : L"Сохраняем повтор",
               english_ ? L"Finalizing the last " + duration + L" seconds..."
@@ -1573,6 +1744,13 @@ bool MainWindow::PositionOverlayWindow() {
     const auto window = GetWindowHandle();
     const auto area = openreplay::ui::ForegroundMonitorArea(window);
     if (!area.monitor) return false;
+    const auto monitor_width = area.bounds.right - area.bounds.left;
+    const auto dpi = openreplay::ui::WindowDpi(window);
+    auto panel_width = openreplay::ui::ScaleForDpi(520, dpi);
+    if (panel_width > monitor_width) panel_width = monitor_width;
+    const RECT bounds{area.bounds.left, area.bounds.top, area.bounds.left + panel_width, area.bounds.bottom};
+    if (visible_ && EqualRect(&bounds, &overlay_bounds_)) return true;
+    overlay_bounds_ = bounds;
     auto style = GetWindowLongPtrW(window, GWL_STYLE);
     style &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);
     style |= WS_POPUP;
@@ -1581,10 +1759,6 @@ bool MainWindow::PositionOverlayWindow() {
     extended_style &= ~WS_EX_APPWINDOW;
     extended_style |= WS_EX_TOOLWINDOW;
     SetWindowLongPtrW(window, GWL_EXSTYLE, extended_style);
-    const auto monitor_width = area.bounds.right - area.bounds.left;
-    const auto dpi = openreplay::ui::WindowDpi(window);
-    auto panel_width = openreplay::ui::ScaleForDpi(520, dpi);
-    if (panel_width > monitor_width) panel_width = monitor_width;
     SetWindowPos(window, HWND_TOPMOST, area.bounds.left, area.bounds.top,
                  panel_width, area.bounds.bottom - area.bounds.top,
                  SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
@@ -1595,6 +1769,7 @@ void MainWindow::ShowOnLaunch() {
     const auto window_handle = GetWindowHandle();
     const bool desktop = openreplay::ui::ForegroundMonitorArea(window_handle).desktop;
     if (visible_ || !PositionOverlayWindow()) return;
+    visible_ = true;
     Microsoft::UI::Xaml::Window window = *this;
     if (desktop) {
         window.AppWindow().Show(false);
@@ -1602,9 +1777,9 @@ void MainWindow::ShowOnLaunch() {
         window.Activate();
         ShowWindow(window_handle, SW_SHOW);
         SetForegroundWindow(window_handle);
-        SettingsButton().Focus(FocusState::Programmatic);
+        // Pointer, not Programmatic: after a hotkey, Programmatic focus draws the Tab focus ring.
+        SettingsButton().Focus(FocusState::Pointer);
     }
-    visible_ = true;
     PollStatus();
 }
 
@@ -1613,10 +1788,11 @@ void MainWindow::ShowOverlay() {
     const auto window = GetWindowHandle();
     const bool desktop = openreplay::ui::ForegroundMonitorArea(window).desktop;
     if (!PositionOverlayWindow()) return;
+    visible_ = true;
+    RefreshRecentClips();
     if (desktop) {
         Microsoft::UI::Xaml::Window xaml_window = *this;
         xaml_window.AppWindow().Show(false);
-        visible_ = true;
         PollStatus();
         return;
     }
@@ -1625,18 +1801,18 @@ void MainWindow::ShowOverlay() {
     }
     SetForegroundWindow(window);
     SetActiveWindow(window);
-    SettingsButton().Focus(FocusState::Programmatic);
-    visible_ = true;
+    SettingsButton().Focus(FocusState::Pointer);
     PollStatus();
 }
 
 void MainWindow::HideOverlay() {
     if (clip_library_window_owner_) clip_library_window_owner_->HideWindow();
-    if (!visible_) return;
-    if (!AnimateWindow(GetWindowHandle(), 130, AW_HIDE | AW_SLIDE | AW_HOR_NEGATIVE)) {
-        ShowWindow(GetWindowHandle(), SW_HIDE);
-    }
+    const auto window = GetWindowHandle();
+    const bool showing = IsWindowVisible(window) != FALSE;
     visible_ = false;
+    if (!showing || !AnimateWindow(window, 130, AW_HIDE | AW_SLIDE | AW_HOR_NEGATIVE)) {
+        ShowWindow(window, SW_HIDE);
+    }
 }
 
 void MainWindow::SetClipFullscreen(bool fullscreen) {
@@ -1644,8 +1820,8 @@ void MainWindow::SetClipFullscreen(bool fullscreen) {
         clip_fullscreen_hid_overlay_ = visible_;
         clip_fullscreen_hid_performance_ = performance_overlay_.Visible();
         if (visible_) {
-            ShowWindow(GetWindowHandle(), SW_HIDE);
             visible_ = false;
+            ShowWindow(GetWindowHandle(), SW_HIDE);
         }
         if (clip_fullscreen_hid_performance_) performance_overlay_.Toggle(settings_, english_);
         return;
@@ -1655,8 +1831,8 @@ void MainWindow::SetClipFullscreen(bool fullscreen) {
         performance_overlay_.Toggle(settings_, english_);
     }
     if (clip_fullscreen_hid_overlay_ && !visible_ && PositionOverlayWindow()) {
-        ShowWindow(GetWindowHandle(), SW_SHOWNOACTIVATE);
         visible_ = true;
+        ShowWindow(GetWindowHandle(), SW_SHOWNOACTIVATE);
         PollStatus();
     }
     clip_fullscreen_hid_overlay_ = false;
@@ -1677,20 +1853,179 @@ void MainWindow::ShowSettings(bool show) {
     settings_visible_ = show;
     DashboardPanel().Visibility(show ? Visibility::Collapsed : Visibility::Visible);
     SettingsPanel().Visibility(show ? Visibility::Visible : Visibility::Collapsed);
+    UpdateNavTabs();
     if (show) {
         LoadSettingsIntoControls();
-        MonitorSelector().Focus(FocusState::Programmatic);
+        MonitorSelector().Focus(FocusState::Pointer);
     } else {
-        SettingsButton().Focus(FocusState::Programmatic);
+        SettingsButton().Focus(FocusState::Pointer);
+    }
+}
+
+void MainWindow::UpdateNavTabs() {
+    if (!back_button_) return;
+    const auto active = DarkTheme().primary_text;
+    const auto idle = DarkTheme().muted;
+    back_button_.Foreground(settings_visible_ ? idle : active);
+    gallery_button_.Foreground(idle);
+    settings_button_text_.Foreground(settings_visible_ ? active : idle);
+}
+
+void MainWindow::UpdateBufferUi(const std::string& state) {
+    if (!buffer_filled_run_) return;
+    last_replay_state_ = state;
+    const auto total = std::max<long long>(settings_.replay_seconds, 1);
+    // shortcut: fill is estimated from when the host reported "running", switch to a host field if one is added.
+    const auto now = std::chrono::steady_clock::now();
+    if (state != "running") replay_running_since_ = {};
+    else if (replay_running_since_ == std::chrono::steady_clock::time_point{}) replay_running_since_ = now;
+    const auto elapsed = replay_running_since_ == std::chrono::steady_clock::time_point{}
+        ? 0LL : std::chrono::duration_cast<std::chrono::seconds>(now - replay_running_since_).count();
+    const auto filled = std::min(elapsed, total);
+    buffer_filled_run_.Text(std::to_wstring(filled));
+    buffer_total_run_.Text(L" / " + std::to_wstring(total) + (english_ ? L" sec" : L" сек"));
+    const auto lit = static_cast<std::size_t>(filled * kBufferSegments / total);
+    for (std::size_t index = 0; index < buffer_segment_cells_.size(); ++index) {
+        buffer_segment_cells_[index].Background(index < lit ? accent_brush_ : track_brush_);
+    }
+    if (state == "running") {
+        ReplayStateText().Text(filled < total ? (english_ ? L"filling" : L"заполняется")
+                                              : (english_ ? L"buffered" : L"в буфере"));
+    }
+
+    const auto span = [this](long long seconds) {
+        return seconds >= 120 ? L"\x2212" + std::to_wstring(seconds / 60) + (english_ ? L"m" : L" мин")
+                              : L"\x2212" + std::to_wstring(seconds) + (english_ ? L"s" : L" с");
+    };
+    buffer_start_label_.Text(span(total));
+    buffer_middle_label_.Text(span(total / 2));
+    buffer_now_label_.Text(english_ ? L"now" : L"сейчас");
+}
+
+void MainWindow::UpdateDashboardMeta() {
+    if (!dashboard_meta_text_) return;
+    const auto codec = settings_.codec == openreplay::VideoCodec::Hevc ? L"HEVC"
+                     : settings_.codec == openreplay::VideoCodec::Av1  ? L"AV1"
+                                                                       : L"H.264";
+    std::wstring text = std::wstring{codec} + L" · " + std::to_wstring(settings_.fps) + L" FPS · " +
+                        std::to_wstring(settings_.bitrate_kbps / 1000) + (english_ ? L" Mbps" : L" Мбит/с");
+    if (!free_space_summary_.empty()) text += L" · " + free_space_summary_;
+    dashboard_meta_text_.Text(text);
+}
+
+void MainWindow::UpdateDashboardShortcuts() {
+    if (!save_replay_keys_) return;
+    const auto replay = std::ranges::find_if(settings_.replay_hotkeys, [](const auto& hotkey) { return hotkey.enabled; });
+    FillKeycaps(save_replay_keys_, replay == settings_.replay_hotkeys.end() ? std::string_view{} : replay->chord, true);
+    FillKeycaps(recording_keys_, settings_.recording_hotkey_enabled ? settings_.recording_hotkey_chord : "", false);
+    FillKeycaps(screenshot_keys_, settings_.screenshot_hotkey_enabled ? settings_.screenshot_hotkey_chord : "", false);
+}
+
+void MainWindow::RefreshRecentClips() {
+    if (!recent_clips_panel_) return;
+    using namespace Microsoft::UI::Xaml;
+    using namespace Microsoft::UI::Xaml::Controls;
+    const auto generation = ++recent_clips_generation_;
+    recent_clips_panel_.Children().Clear();
+
+    std::vector<std::pair<std::filesystem::file_time_type, std::filesystem::directory_entry>> clips;
+    for (const auto& entry : ListClips(settings_.output_directory)) {
+        std::error_code time_error;
+        const auto written = entry.last_write_time(time_error);
+        if (!time_error) clips.emplace_back(written, entry);
+    }
+    const auto count = std::min(clips.size(), kRecentClipCount);
+    std::partial_sort(clips.begin(), clips.begin() + static_cast<std::ptrdiff_t>(count), clips.end(),
+                      [](const auto& left, const auto& right) { return left.first > right.first; });
+
+    const auto theme = DarkTheme();
+    if (count == 0) {
+        auto empty = Text(english_ ? L"No clips yet. Save a replay to see it here."
+                                   : L"Пока нет клипов. Сохраните повтор, и он появится здесь.", 12.5, theme.muted);
+        empty.TextWrapping(TextWrapping::Wrap);
+        empty.Margin(Thickness{24, 0, 24, 0});
+        recent_clips_panel_.Children().Append(empty);
+        return;
+    }
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto& [written, entry] = clips[index];
+        // The button spans the whole panel so its hover fill reaches the edges; the inset divider lives inside.
+        Button row;
+        row.Background(Brush(0x00000000));
+        row.BorderThickness(Thickness{0, 0, 0, 0});
+        row.CornerRadius(CornerRadius{0, 0, 0, 0});
+        row.Padding(Thickness{0, 0, 0, 0});
+        row.HorizontalAlignment(HorizontalAlignment::Stretch);
+        row.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+        row.Click([this](auto&&, auto&&) { ShowClipLibrary(); });
+
+        Grid content;
+        content.ColumnSpacing(14);
+        AddColumn(content, 96, GridUnitType::Pixel);
+        AddColumn(content, 1, GridUnitType::Star);
+        Border thumbnail;
+        thumbnail.Height(54);
+        thumbnail.CornerRadius(CornerRadius{6, 6, 6, 6});
+        thumbnail.Background(theme.card);
+        Image image;
+        image.Stretch(Media::Stretch::UniformToFill);
+        thumbnail.Child(image);
+        content.Children().Append(thumbnail);
+
+        StackPanel copy;
+        copy.VerticalAlignment(VerticalAlignment::Center);
+        auto title = Text(ClipTitle(entry.path(), english_), 13.5, theme.primary_text);
+        title.FontWeight(Windows::UI::Text::FontWeights::Medium());
+        copy.Children().Append(title);
+        std::error_code size_error;
+        const auto size = entry.file_size(size_error);
+        auto detail = Text(ClipDay(written, english_) + L", " + ClipClock(written) + (size_error ? L"" : L" · " + ByteSize(size, english_)),
+                           11.5, theme.muted);
+        detail.Margin(Thickness{0, 3, 0, 0});
+        copy.Children().Append(detail);
+        Grid::SetColumn(copy, 1);
+        content.Children().Append(copy);
+        Border inset;
+        inset.Margin(Thickness{24, 0, 24, 0});
+        inset.Padding(Thickness{0, 10, 0, 10});
+        inset.BorderBrush(theme.border);
+        inset.BorderThickness(Thickness{0, 0, 0, 1});
+        inset.Child(content);
+        row.Content(inset);
+        recent_clips_panel_.Children().Append(row);
+        LoadRecentThumbnailAsync(entry.path(), image, generation);
+    }
+}
+
+winrt::fire_and_forget MainWindow::LoadRecentThumbnailAsync(std::filesystem::path path,
+                                                            Microsoft::UI::Xaml::Controls::Image image,
+                                                            std::uint64_t generation) {
+    const auto weak = get_weak();
+    try {
+        const auto file = co_await Windows::Storage::StorageFile::GetFileFromPathAsync(path.wstring());
+        const auto thumbnail = co_await file.GetThumbnailAsync(
+            Windows::Storage::FileProperties::ThumbnailMode::VideosView, 192,
+            Windows::Storage::FileProperties::ThumbnailOptions::UseCurrentScale);
+        Microsoft::UI::Xaml::Media::Imaging::BitmapImage bitmap;
+        co_await bitmap.SetSourceAsync(thumbnail);
+        thumbnail.Close();
+        if (const auto self = weak.get(); self && self->recent_clips_generation_ == generation) image.Source(bitmap);
+    } catch (...) {
     }
 }
 
 void MainWindow::ShowClipLibrary() {
+    // Repeated clicks must not rebuild the list and reload every thumbnail.
+    if (clip_library_window_owner_ && clip_library_window_owner_->IsShown()) {
+        clip_library_window_owner_->ActivateWindow();
+        return;
+    }
     if (!clip_library_window_owner_) {
         clip_library_window_owner_ = winrt::make_self<ClipLibraryWindow>();
         const auto weak = get_weak();
         clip_library_window_owner_->Configure(
-            settings_.output_directory, english_, discord_webhook_configured_, GetWindowHandle(),
+            settings_.output_directory, english_, discord_webhook_configured_,
+            settings_.discord_target_megabytes, GetWindowHandle(),
             [weak](std::filesystem::path path, bool webhook) {
                 if (const auto self = weak.get()) self->ShareReplay(path, webhook);
             },
@@ -1699,7 +2034,7 @@ void MainWindow::ShowClipLibrary() {
             });
     } else {
         clip_library_window_owner_->Configure(settings_.output_directory, english_, discord_webhook_configured_,
-                                               GetWindowHandle(),
+                                               settings_.discord_target_megabytes, GetWindowHandle(),
                                                [weak = get_weak()](std::filesystem::path path, bool webhook) {
                                                    if (const auto self = weak.get()) {
                                                        self->ShareReplay(path, webhook);
@@ -1739,6 +2074,7 @@ void MainWindow::LoadSettingsIntoControls() {
     OutputFormatSelector().SelectedIndex(settings_.output_format == openreplay::OutputFormat::Mp4 ? 1 : 0);
     performance_position_selector_.SelectedIndex(
         settings_.performance_overlay_position == openreplay::PerformanceOverlayPosition::BottomRight ? 1 : 0);
+    performance_graph_style_selector_.SelectedIndex(settings_.performance_frametime_line ? 1 : 0);
     performance_opacity_slider_.Value(settings_.performance_overlay_opacity);
     performance_fps_.IsChecked(settings_.performance_show_fps);
     performance_fps_lows_.IsChecked(settings_.performance_show_fps_lows);
@@ -1839,7 +2175,8 @@ void MainWindow::EnumerateAudioDevices() {
                                    const std::vector<openreplay::AudioDeviceConfig>& selected) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
-        const ControlFactory factory{DarkTheme()};
+        const auto theme = DarkTheme();
+        const ControlFactory factory{theme};
         panel.Children().Clear();
         ids.clear();
         names.clear();
@@ -1884,7 +2221,7 @@ void MainWindow::EnumerateAudioDevices() {
             AddColumn(controls, 38, GridUnitType::Pixel);
             Border level_track;
             level_track.Height(4);
-            level_track.Background(Brush(0xFF3F3F46));
+            level_track.Background(theme.track);
             level_track.CornerRadius(CornerRadius{2, 2, 2, 2});
             level_track.VerticalAlignment(VerticalAlignment::Center);
             Grid level_grid;
@@ -2003,21 +2340,15 @@ BOOL CALLBACK MainWindow::MonitorCallback(HMONITOR monitor, HDC, LPRECT, LPARAM 
 void MainWindow::ApplyLanguage() {
     const auto set = [](auto control, std::wstring_view text) { control.Text(winrt::hstring{text}); };
     set(SettingsButtonText(), english_ ? L"Settings" : L"Настройки");
-    set(DashboardTitle(), english_ ? L"Capture center" : L"Центр захвата");
-    set(DashboardSubtitle(), english_ ? L"Status and quick actions"
-                                       : L"Состояние и быстрые действия");
     set(ReplayTitle(), english_ ? L"Instant replay" : L"Мгновенный повтор");
-    set(ReplayDescription(), english_ ? L"Save the last moments without interrupting your game."
-                                      : L"Сохранит последние моменты без остановки игры.");
-    set(RecordingTitle(), english_ ? L"Session recording" : L"Запись сессии");
+    set(ReplayDescription(), english_ ? L"Background buffer of the last " + std::to_wstring(settings_.replay_seconds) + L" sec"
+                                      : L"Фоновый буфер последних " + std::to_wstring(settings_.replay_seconds) + L" сек");
     set(ScreenshotTitle(), english_ ? L"Screenshot" : L"Снимок экрана");
-    set(ScreenshotStateText(), settings_.screenshot_hotkey_enabled
-        ? L"PNG · " + openreplay::FromUtf8(settings_.screenshot_hotkey_chord) : L"PNG");
-    set(ScreenshotDescription(), english_ ? L"Saved at the selected monitor's native resolution."
-                                           : L"Сохранение в исходном разрешении выбранного монитора.");
+    set(ScreenshotStateText(), english_ ? L"PNG · native resolution" : L"PNG · исходное разрешение");
     set(SettingsTitle(), english_ ? L"Settings" : L"Настройки");
-    set(SettingsSubtitle(), english_ ? L"Changes save automatically"
-                                        : L"Изменения сохраняются автоматически");
+    set(save_replay_text_, english_ ? L"Save replay" : L"Сохранить повтор");
+    set(recent_title_, english_ ? L"RECENT" : L"НЕДАВНИЕ");
+    recent_all_button_.Content(winrt::box_value(english_ ? L"All clips →" : L"Все клипы →"));
     set(source_section_title_, english_ ? L"SOURCE" : L"ИСТОЧНИК");
     set(video_section_title_, english_ ? L"VIDEO" : L"ВИДЕО");
     set(input_section_title_, english_ ? L"INTERFACE AND INPUT" : L"ИНТЕРФЕЙС И ВВОД");
@@ -2032,7 +2363,7 @@ void MainWindow::ApplyLanguage() {
     set(ReplayDurationLabel(), english_ ? L"Replay duration" : L"Длительность повтора");
     set(QualityLabel(), english_ ? L"Quality preset" : L"Пресет качества");
     set(BitrateLabel(), english_ ? L"Target bitrate" : L"Целевой битрейт");
-    set(replay_size_label_, english_ ? L"REPLAY ESTIMATE" : L"ОЦЕНКА ПОВТОРА");
+    set(replay_size_label_, english_ ? L"per replay" : L"на один повтор");
     set(CodecLabel(), english_ ? L"Codec" : L"Кодек");
     set(FpsLabel(), english_ ? L"Frame rate" : L"Частота кадров");
     set(LanguageLabel(), english_ ? L"Language" : L"Язык");
@@ -2056,6 +2387,10 @@ void MainWindow::ApplyLanguage() {
     screenshot_hotkey_input_.PlaceholderText(english_ ? L"Press shortcut" : L"Нажмите сочетание");
     set(performance_overlay_label_, english_ ? L"Performance overlay" : L"Оверлей производительности");
     set(performance_position_label_, english_ ? L"Position" : L"Положение");
+    set(performance_graph_style_label_, english_ ? L"Frame-time graph" : L"График времени кадра");
+    const auto graph_styles = performance_graph_style_selector_.Items();
+    graph_styles.GetAt(0).as<ComboBoxItem>().Content(winrt::box_value(english_ ? L"Bars" : L"Столбики"));
+    graph_styles.GetAt(1).as<ComboBoxItem>().Content(winrt::box_value(english_ ? L"Line" : L"Линия"));
     set(performance_opacity_label_, english_ ? L"Background opacity" : L"Прозрачность фона");
     performance_fps_.Content(winrt::box_value(L"FPS"));
     performance_fps_lows_.Content(winrt::box_value(L"1% / 0.1% FPS"));
@@ -2085,7 +2420,7 @@ void MainWindow::ApplyLanguage() {
     }) + (screenshot_hotkey_toggle_.IsOn() ? 1 : 0) + (recording_hotkey_toggle_.IsOn() ? 1 : 0);
     set(shortcuts_summary_, std::to_wstring(shortcut_count) +
         (english_ ? L" active" : (shortcut_count == 1 ? L" активно" : L" активны")));
-    set(HintText(), english_ ? L"ALT + Z   CLOSE PANEL" : L"ALT + Z   ЗАКРЫТЬ ПАНЕЛЬ");
+    set(HintText(), english_ ? L"Alt+Z — hide panel" : L"Alt+Z — скрыть панель");
 
     ReplayToggle().OnContent(nullptr);
     ReplayToggle().OffContent(nullptr);
@@ -2101,15 +2436,11 @@ void MainWindow::ApplyLanguage() {
     developer_updates_toggle_.OffContent(nullptr);
     discord_auto_send_toggle_.OnContent(nullptr);
     discord_auto_send_toggle_.OffContent(nullptr);
-    const auto replay_action = english_ ? L"Save last " + std::to_wstring(settings_.replay_seconds) + L" sec"
-                                        : L"Сохранить последние " + std::to_wstring(settings_.replay_seconds) + L" сек";
-    SaveReplayButton().Content(winrt::box_value(replay_action));
-    ScreenshotButton().Content(winrt::box_value(english_ ? L"Take screenshot" : L"Сделать снимок"));
     if (!settings_apply_pending_ && !settings_reload_in_flight_ && !settings_reload_requested_) {
         UpdateSettingsSaveStatus(english_ ? L"Changes save automatically"
                                            : L"Изменения сохраняются автоматически");
     }
-    back_button_.Content(winrt::box_value(english_ ? L"← Back" : L"← Назад"));
+    back_button_.Content(winrt::box_value(english_ ? L"Home" : L"Главная"));
     gallery_button_.Content(winrt::box_value(english_ ? L"Clips" : L"Клипы"));
     open_folder_button_.Content(winrt::box_value(english_ ? L"Recordings" : L"Записи"));
     open_logs_button_.Content(winrt::box_value(english_ ? L"Logs" : L"Логи"));
@@ -2118,8 +2449,8 @@ void MainWindow::ApplyLanguage() {
     discord_test_button_.Content(winrt::box_value(english_ ? L"Test" : L"Проверить"));
     check_update_button_.Content(winrt::box_value(english_ ? L"Check now" : L"Проверить"));
     release_notes_button_.Content(winrt::box_value(english_ ? L"Release notes" : L"Что нового"));
-    RecordingButton().Content(winrt::box_value(recording_ ? (english_ ? L"Stop recording" : L"Остановить запись")
-                                                          : (english_ ? L"Start recording" : L"Начать запись")));
+    RecordingTitle().Text(recording_ ? (english_ ? L"Stop recording" : L"Остановить запись")
+                                     : (english_ ? L"Start recording" : L"Начать запись"));
 
     const auto quality_items = QualitySelector().Items();
     quality_items.GetAt(0).as<ComboBoxItem>().Content(winrt::box_value(english_ ? L"Performance" : L"Производительность"));
@@ -2135,6 +2466,10 @@ void MainWindow::ApplyLanguage() {
     UpdateReplaySizeEstimate();
     UpdateAudioDeviceSummaries();
     UpdatePerformanceOverlaySummary();
+    UpdateNavTabs();
+    UpdateDashboardShortcuts();
+    UpdateDashboardMeta();
+    UpdateBufferUi(last_replay_state_);
     UpdateDiscordUi();
     last_storage_update_ = {};
     UpdateStorageSpace();
@@ -2171,11 +2506,6 @@ void MainWindow::UpdateOutputFormatDescription() {
                      : L"Гибкий контейнер для записи и последующей обработки.");
     }
     output_format_description_.Foreground(secondary_text_brush_);
-
-    const auto format = mp4 ? L"MP4" : L"MKV";
-    RecordingDescription().Text(
-        english_ ? std::wstring{format} + L"  •  Game, desktop, and microphone on separate tracks"
-                 : std::wstring{format} + L"  •  Игра, система и микрофон на отдельных дорожках");
 }
 
 void MainWindow::UpdateReplaySizeEstimate() {
@@ -2223,6 +2553,18 @@ void MainWindow::UpdateReplaySizeEstimate() {
 }
 
 void MainWindow::PollStatus() {
+    // Follow the active window on this monitor: beside the taskbar over a normal window, at the edge over a
+    // fullscreen game. While one of our own windows is active the panel stays put, since it still covers the game.
+    const auto foreground = GetForegroundWindow();
+    DWORD process_id = 0;
+    GetWindowThreadProcessId(foreground, &process_id);
+    const bool external = foreground && process_id != GetCurrentProcessId();
+    // Remembered so a replay saved from the panel is still named after the game under it.
+    if (external) last_external_window_ = foreground;
+    if (visible_ && external && MonitorFromWindow(foreground, MONITOR_DEFAULTTONULL) ==
+                                    MonitorFromWindow(GetWindowHandle(), MONITOR_DEFAULTTONULL)) {
+        PositionOverlayWindow();
+    }
     LayoutNotifications();
     ReconcileAudioDevices();
     UpdateStorageSpace();
@@ -2251,6 +2593,7 @@ void MainWindow::PollStatus() {
         EncoderText().Text(encoder_status);
         ReplayStateText().Text(replay_status);
         ReplayStateText().Foreground(unavailable ? danger_brush_ : secondary_text_brush_);
+        UpdateBufferUi({});
         SaveReplayButton().IsEnabled(false);
         RecordingButton().IsEnabled(false);
         ScreenshotButton().IsEnabled(false);
@@ -2575,8 +2918,9 @@ void MainWindow::ApplyResponse(const openreplay::Response& response) {
     const auto ready_text = (english_ ? std::wstring{L"Ready to record  •  "} : std::wstring{L"Готово к записи  •  "}) + audio_text;
     RecordingStateText().Text(recording_ ? DurationText(recording_seconds) + L"  •  " + audio_text : ready_text);
     RecordingStateText().Foreground(recording_ ? danger_brush_ : (audio_signal ? secondary_text_brush_ : danger_brush_));
-    RecordingButton().Content(winrt::box_value(recording_ ? (english_ ? L"Stop recording" : L"Остановить запись")
-                                                          : (english_ ? L"Start recording" : L"Начать запись")));
+    RecordingTitle().Text(recording_ ? (english_ ? L"Stop recording" : L"Остановить запись")
+                                     : (english_ ? L"Start recording" : L"Начать запись"));
+    UpdateBufferUi(state);
     SaveReplayButton().IsEnabled(FieldIsTrue(response, "replay_requested") && state == "running");
     RecordingButton().IsEnabled(capture_ready);
     ScreenshotButton().IsEnabled(capture_ready);
@@ -2624,6 +2968,8 @@ void MainWindow::UpdateStorageSpace() {
     if (!GetDiskFreeSpaceExW(settings_.output_directory.c_str(), &available, &total, nullptr)) {
         storage_space_text_.Text(english_ ? L"Free space unavailable" : L"Свободное место недоступно");
         storage_space_text_.Foreground(secondary_text_brush_);
+        free_space_summary_.clear();
+        UpdateDashboardMeta();
         return;
     }
     constexpr std::uint64_t warning_bytes = 5ULL * 1000ULL * 1000ULL * 1000ULL;
@@ -2633,6 +2979,8 @@ void MainWindow::UpdateStorageSpace() {
                              ByteSize(total.QuadPart, english_) +
                              (low ? (english_ ? L"  •  Low space" : L"  •  Мало места") : L""));
     storage_space_text_.Foreground(low ? danger_brush_ : secondary_text_brush_);
+    free_space_summary_ = ByteSize(available.QuadPart, english_) + (english_ ? L" free" : L" свободно");
+    UpdateDashboardMeta();
     if (low && !low_space_warning_shown_) {
         low_space_warning_shown_ = true;
         ShowToast(english_ ? L"Low disk space" : L"Мало места на диске",
@@ -2717,6 +3065,7 @@ void MainWindow::ApplyReplaySaveStatus(const openreplay::Response& response) {
     if (revision == replay_save_revision_) return;
     replay_save_revision_ = revision;
     replay_save_pending_ = false;
+    const auto game = std::exchange(replay_game_, {});
     StartPendingHostSettingsApply();
 
     const auto error = Field(response, "replay_save_error");
@@ -2730,12 +3079,25 @@ void MainWindow::ApplyReplaySaveStatus(const openreplay::Response& response) {
 
     const auto output = Field(response, "replay_save_output");
     if (output.empty()) return;
-    const auto path = std::filesystem::path{openreplay::FromUtf8(output)};
+    auto path = std::filesystem::path{openreplay::FromUtf8(output)};
+    // OBS names every replay OpenReplay_<time>; move it into the game's folder, named after the game.
+    constexpr std::wstring_view obs_prefix = L"OpenReplay";
+    if (const auto original = path.filename().wstring(); !game.empty() && original.starts_with(obs_prefix)) {
+        const auto folder = path.parent_path() / game;
+        const auto renamed = folder / (game + original.substr(obs_prefix.size()));
+        std::error_code rename_error;
+        std::filesystem::create_directories(folder, rename_error);
+        if (!rename_error && !std::filesystem::exists(renamed, rename_error)) {
+            std::filesystem::rename(path, renamed, rename_error);
+            if (!rename_error) path = renamed;
+        }
+    }
     const auto filename = path.filename().wstring();
     ShowToast(english_ ? L"Replay saved" : L"Повтор сохранён",
               filename.empty() ? path.wstring() : filename, false, false, true, path,
               NotificationChannel::ReplaySave, true);
     openreplay::ui::TraceStartup(L"Replay saved: " + path.wstring());
+    RefreshRecentClips();
     if (settings_.discord_auto_send && discord_webhook_configured_) ShareReplay(path, true);
 }
 
@@ -2836,11 +3198,16 @@ void MainWindow::CompleteReplayShare(std::filesystem::path output, bool webhook,
                            : L"Не удалось скопировать файл; откройте его папку",
                   true, false, true, output, NotificationChannel::DiscordShare);
     } else {
-        ShowToast(english_ ? L"Discord clip copied" : L"Клип для Discord скопирован",
-                  english_ ? L"Paste it into Discord with Ctrl+V"
-                           : L"Вставьте его в Discord через Ctrl+V",
-                  false, false, true, output, NotificationChannel::DiscordShare);
+        std::error_code size_error;
+        const auto size = std::filesystem::file_size(output, size_error);
+        const bool compressed = output.parent_path().filename() == L"Discord" && !size_error;
+        ShowToast(compressed ? (english_ ? L"Compressed to " : L"Сжато до ") + ByteSize(size, english_) +
+                                   (english_ ? L" and copied" : L" и скопировано")
+                             : (english_ ? L"Copied" : L"Скопировано"),
+                  english_ ? L"Paste into Discord with Ctrl+V" : L"Вставьте в Discord — Ctrl+V",
+                  false, false, true, {}, NotificationChannel::DiscordShare);
     }
+    if (result.ok && clip_library_window_owner_) clip_library_window_owner_->ShowSharedCopy(output);
     if (discord_webhook_configured_ && !pending_discord_uploads_.empty()) {
         auto next = std::move(pending_discord_uploads_.front());
         pending_discord_uploads_.pop_front();
@@ -3048,8 +3415,18 @@ void MainWindow::ShowDesktopNotification(std::wstring_view title, std::wstring_v
         item->channel = channel;
         item->window = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"OpenReplay.Notification", L"OpenReplay",
-            WS_POPUP, 0, 0, 390, 118, nullptr, nullptr, GetModuleHandleW(nullptr), item.get());
+            WS_POPUP, 0, 0, kNotificationWidth, 80, nullptr, nullptr, GetModuleHandleW(nullptr), item.get());
         if (!item->window) return;
+        // Windows 11 draws smooth corners and the border; older systems fall back to a window region.
+        constexpr DWORD kCornerAttribute = 33;  // DWMWA_WINDOW_CORNER_PREFERENCE
+        constexpr DWORD kBorderAttribute = 34;  // DWMWA_BORDER_COLOR
+        constexpr DWORD round_corners = 2;      // DWMWCP_ROUND
+        item->rounded_by_dwm = SUCCEEDED(DwmSetWindowAttribute(item->window, kCornerAttribute, &round_corners,
+                                                               sizeof(round_corners)));
+        if (item->rounded_by_dwm) {
+            constexpr COLORREF border = RGB(46, 46, 51);
+            DwmSetWindowAttribute(item->window, kBorderAttribute, &border, sizeof(border));
+        }
         notification = item.get();
         notifications_.insert(notifications_.begin(), std::move(item));
     }
@@ -3102,9 +3479,19 @@ void MainWindow::LayoutNotifications() {
     for (const auto& item : notifications_) {
         auto& notification = *item;
         if (!notification.window || notification.hiding) continue;
-        const auto width = openreplay::ui::ScaleForDpi(390, dpi);
-        const auto height = openreplay::ui::ScaleForDpi(
-            notification.output.empty() ? 96 : notification.shareable ? 154 : 126, dpi);
+        const auto width = openreplay::ui::ScaleForDpi(kNotificationWidth, dpi);
+        auto height = openreplay::ui::ScaleForDpi(80, dpi);
+        if (const auto dc = GetDC(notification.window)) {
+            const NotificationFonts fonts{dpi};
+            height = MeasureNotification(dc, dpi, fonts, notification.message,
+                                         NotificationActionsFor(!notification.output.empty(), notification.shareable,
+                                                                discord_webhook_configured_, english_)).height;
+            ReleaseDC(notification.window, dc);
+        }
+        if (notification.dpi != dpi || notification.height != height) {
+            InvalidateRect(notification.window, nullptr, FALSE);
+        }
+        notification.dpi = dpi;
         notification.width = width;
         notification.height = height;
         notification.hidden_x = area.bounds.right + openreplay::ui::ScaleForDpi(8, dpi);
@@ -3112,10 +3499,12 @@ void MainWindow::LayoutNotifications() {
             overflow.push_back(&notification);
             continue;
         }
-        if (const auto region = CreateRoundRectRgn(0, 0, width + 1, height + 1,
-                                                   openreplay::ui::ScaleForDpi(18, dpi),
-                                                   openreplay::ui::ScaleForDpi(18, dpi))) {
-            if (!SetWindowRgn(notification.window, region, TRUE)) DeleteObject(region);
+        if (!notification.rounded_by_dwm) {
+            if (const auto region = CreateRoundRectRgn(0, 0, width + 1, height + 1,
+                                                       openreplay::ui::ScaleForDpi(20, dpi),
+                                                       openreplay::ui::ScaleForDpi(20, dpi))) {
+                if (!SetWindowRgn(notification.window, region, TRUE)) DeleteObject(region);
+            }
         }
         StartNotificationAnimation(notification, area.bounds.right - width - margin, y, false, 160);
         y += height + gap;
@@ -3257,84 +3646,81 @@ LRESULT CALLBACK MainWindow::NotificationWindowProc(HWND window, UINT message, W
         }
         return 0;
     }
-    if (message == WM_LBUTTONUP && notification->output.empty()) {
-        self->ToggleOverlay();
-        return 0;
-    }
     if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+    if (message == WM_ERASEBKGND) return 1;
+    const auto dpi = notification->dpi ? notification->dpi : openreplay::ui::WindowDpi(window);
+    const auto actions = NotificationActionsFor(!notification->output.empty(), notification->shareable,
+                                                self->discord_webhook_configured_, self->english_);
     if (message == WM_PAINT) {
         PAINTSTRUCT paint{};
         const auto dc = BeginPaint(window, &paint);
         if (!dc) return 0;
         RECT bounds{};
         GetClientRect(window, &bounds);
-        const auto dpi = openreplay::ui::WindowDpi(window);
         const auto scale = [dpi](int value) { return openreplay::ui::ScaleForDpi(value, dpi); };
-        const auto background = CreateSolidBrush(RGB(24, 24, 27));
-        if (background) {
-            FillRect(dc, &bounds, background);
-            DeleteObject(background);
-        }
-        const auto accent = CreateSolidBrush(notification->error ? RGB(255, 92, 103)
-                                                                 : notification->progress ? RGB(0, 193, 106)
-                                                                                          : RGB(0, 220, 130));
-        RECT indicator{0, 0, scale(5), bounds.bottom};
-        if (accent) {
-            FillRect(dc, &indicator, accent);
-            DeleteObject(accent);
-        }
-        SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, RGB(255, 255, 255));
-        auto title_font = CreateFontW(-scale(17), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                                      OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                                      DEFAULT_PITCH, L"Public Sans");
-        auto body_font = CreateFontW(-scale(14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                                     OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                                     DEFAULT_PITCH, L"Public Sans");
-        const auto old_font = SelectObject(dc, title_font ? title_font : GetStockObject(DEFAULT_GUI_FONT));
-        RECT title_rect{scale(20), scale(14), bounds.right - scale(18), scale(38)};
-        DrawTextW(dc, notification->title.c_str(), -1, &title_rect, DT_SINGLELINE | DT_END_ELLIPSIS);
-        SelectObject(dc, body_font ? body_font : GetStockObject(DEFAULT_GUI_FONT));
-        SetTextColor(dc, RGB(161, 161, 170));
-        RECT message_rect{scale(20), scale(42), bounds.right - scale(18),
-                          notification->output.empty() ? bounds.bottom - scale(12) : scale(82)};
-        DrawTextW(dc, notification->message.c_str(), -1, &message_rect, DT_WORDBREAK | DT_END_ELLIPSIS);
-        if (!notification->output.empty()) {
-            SetTextColor(dc, RGB(0, 220, 130));
-            RECT open_rect{scale(20), scale(92), scale(145), scale(116)};
-            RECT copy_rect{scale(160), scale(92), scale(300), scale(116)};
-            DrawTextW(dc, self->english_ ? L"Open folder" : L"Открыть папку", -1, &open_rect, DT_SINGLELINE);
-            DrawTextW(dc, self->english_ ? L"Copy path" : L"Копировать путь", -1, &copy_rect, DT_SINGLELINE);
-            if (notification->shareable) {
-                RECT share_rect{scale(20), scale(120), scale(175), scale(146)};
-                RECT webhook_rect{scale(190), scale(120), scale(360), scale(146)};
-                DrawTextW(dc, self->english_ ? L"Discord copy" : L"Копия для Discord", -1,
-                          &share_rect, DT_SINGLELINE);
-                DrawTextW(dc, self->english_ ? L"Send webhook" : L"Отправить webhook", -1,
-                          &webhook_rect, DT_SINGLELINE);
+        const auto fill = [dc](const RECT& rect, COLORREF color) {
+            if (const auto brush = CreateSolidBrush(color)) {
+                FillRect(dc, &rect, brush);
+                DeleteObject(brush);
             }
+        };
+        const NotificationFonts fonts{dpi};
+        const auto layout = MeasureNotification(dc, dpi, fonts, notification->message, actions);
+        fill(bounds, RGB(23, 23, 26));
+        if (!notification->rounded_by_dwm) {
+            const auto pen = CreatePen(PS_SOLID, 1, RGB(46, 46, 51));
+            const auto old_pen = SelectObject(dc, pen ? pen : GetStockObject(NULL_PEN));
+            const auto old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+            RoundRect(dc, 0, 0, bounds.right, bounds.bottom, scale(20), scale(20));
+            SelectObject(dc, old_brush);
+            SelectObject(dc, old_pen);
+            if (pen) DeleteObject(pen);
+        }
+        fill(layout.marker, notification->error ? RGB(255, 107, 110)
+                            : notification->progress ? RGB(224, 179, 65)
+                                                     : RGB(118, 185, 0));
+        SetBkMode(dc, TRANSPARENT);
+        const auto old_font = SelectObject(dc, fonts.title ? fonts.title : GetStockObject(DEFAULT_GUI_FONT));
+        SetTextColor(dc, RGB(237, 237, 237));
+        auto title_rect = layout.title;
+        DrawTextW(dc, notification->title.c_str(), -1, &title_rect, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        if (!notification->message.empty()) {
+            SelectObject(dc, fonts.body ? fonts.body : GetStockObject(DEFAULT_GUI_FONT));
+            SetTextColor(dc, RGB(161, 161, 170));
+            auto message_rect = layout.message;
+            DrawTextW(dc, notification->message.c_str(), -1, &message_rect,
+                      DT_WORDBREAK | DT_EDITCONTROL | DT_END_ELLIPSIS | DT_NOPREFIX);
+        }
+        SelectObject(dc, fonts.action ? fonts.action : GetStockObject(DEFAULT_GUI_FONT));
+        SetTextColor(dc, RGB(139, 212, 0));
+        for (std::size_t index = 0; index < layout.actions.size(); ++index) {
+            auto rect = layout.actions[index].second;
+            DrawTextW(dc, actions[index].second.c_str(), -1, &rect, DT_SINGLELINE | DT_NOPREFIX);
         }
         SelectObject(dc, old_font);
-        if (title_font) DeleteObject(title_font);
-        if (body_font) DeleteObject(body_font);
         EndPaint(window, &paint);
         return 0;
     }
-    if (message == WM_LBUTTONUP && !notification->output.empty()) {
+    if (message == WM_LBUTTONUP) {
         const POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-        const auto dpi = openreplay::ui::WindowDpi(window);
-        const auto scale = [dpi](int value) { return openreplay::ui::ScaleForDpi(value, dpi); };
-        const RECT open_rect{scale(20), scale(92), scale(145), scale(116)};
-        const RECT copy_rect{scale(160), scale(92), scale(300), scale(116)};
-        const RECT share_rect{scale(20), scale(120), scale(175), scale(146)};
-        const RECT webhook_rect{scale(190), scale(120), scale(360), scale(146)};
-        if (notification->shareable && PtInRect(&share_rect, point)) {
+        std::optional<NotificationAction> clicked;
+        if (const auto dc = GetDC(window)) {
+            const NotificationFonts fonts{dpi};
+            const auto layout = MeasureNotification(dc, dpi, fonts, notification->message, actions);
+            ReleaseDC(window, dc);
+            for (const auto& [action, rect] : layout.actions) {
+                if (PtInRect(&rect, point)) clicked = action;
+            }
+        }
+        if (!clicked) {
+            if (notification->output.empty()) self->ToggleOverlay();
+        } else if (*clicked == NotificationAction::Copy) {
             self->ShareNotificationOutput(*notification, false);
-        } else if (notification->shareable && PtInRect(&webhook_rect, point)) {
+        } else if (*clicked == NotificationAction::Webhook) {
             self->ShareNotificationOutput(*notification, true);
-        } else if (PtInRect(&open_rect, point)) {
+        } else if (*clicked == NotificationAction::OpenFolder) {
             self->OpenNotificationOutput(*notification);
-        } else if (PtInRect(&copy_rect, point)) {
+        } else {
             self->CopyNotificationOutput(*notification);
         }
         return 0;
@@ -3567,6 +3953,7 @@ bool MainWindow::ReadSettingsFromControls(openreplay::Settings& draft, bool show
     draft.performance_overlay_position = performance_position_selector_.SelectedIndex() == 1
         ? openreplay::PerformanceOverlayPosition::BottomRight
         : openreplay::PerformanceOverlayPosition::TopRight;
+    draft.performance_frametime_line = performance_graph_style_selector_.SelectedIndex() == 1;
     draft.performance_overlay_opacity =
         static_cast<std::uint32_t>(std::lround(performance_opacity_slider_.Value()));
     const auto checked = [](const Microsoft::UI::Xaml::Controls::CheckBox& box) {
@@ -3974,6 +4361,25 @@ void MainWindow::ExitApplication() {
 LRESULT CALLBACK MainWindow::WindowSubclass(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
                                              UINT_PTR, DWORD_PTR context) {
     auto* self = reinterpret_cast<MainWindow*>(context);
+    // WinUI can re-show the main window after a background launch hid it.
+    if (message == WM_SHOWWINDOW && wparam && !self->visible_ && !self->exiting_) {
+        ShowWindow(window, SW_HIDE);
+        return 0;
+    }
+    // Once the panel takes focus from a fullscreen game, the system pushes it into the work area,
+    // beside a taskbar the game still covers. Keep it where PositionOverlayWindow put it.
+    if (message == WM_WINDOWPOSCHANGING && self->visible_) {
+        auto* position = reinterpret_cast<WINDOWPOS*>(lparam);
+        const auto& bounds = self->overlay_bounds_;
+        if (!(position->flags & SWP_NOMOVE)) {
+            position->x = bounds.left;
+            position->y = bounds.top;
+        }
+        if (!(position->flags & SWP_NOSIZE)) {
+            position->cx = bounds.right - bounds.left;
+            position->cy = bounds.bottom - bounds.top;
+        }
+    }
     if (message == WM_HOTKEY && wparam == kOverlayHotkey) {
         self->ToggleOverlay();
         return 0;

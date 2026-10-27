@@ -170,7 +170,7 @@ bool ObsCaptureEngine::Initialize(const Settings& settings, std::string& error) 
     }
 
     if (!LoadModule(L"win-capture", true, error) || !LoadModule(L"win-wasapi", true, error) ||
-        !LoadModule(L"obs-ffmpeg", true, error)) {
+        !LoadModule(L"obs-ffmpeg", true, error) || !LoadModule(L"obs-filters", true, error)) {
         Shutdown();
         return false;
     }
@@ -257,8 +257,76 @@ bool ObsCaptureEngine::CreateSources(std::string& error) {
         error = "Unable to create monitor capture source";
         return false;
     }
+    // OBS appends the registration version to versioned source IDs. The v2
+    // filters are required for color_multiply and the current color pipeline.
+    color_filter_ = api_.obs_source_create("color_filter_v2", "OpenReplay Color Grade", nullptr, nullptr);
+    sharpness_filter_ = api_.obs_source_create("sharpness_filter_v2", "OpenReplay Sharpness", nullptr, nullptr);
+    if (!color_filter_ || !sharpness_filter_) {
+        error = "Unable to create video filters";
+        return false;
+    }
+    api_.obs_source_filter_add(display_, color_filter_);
+    api_.obs_source_filter_add(display_, sharpness_filter_);
     api_.obs_set_output_source(0, display_);
+    // Apply the configured capture method even on the first initialization.
+    const auto filters = settings_.filters;
+    settings_.filters.enabled = false;
+    if (!ReloadVideoFilters(filters, error)) return false;
     return CreateAudioSources(error);
+}
+
+bool ObsCaptureEngine::ReloadVideoFilters(const VideoFilters& input, std::string& error) {
+    auto filters = input;
+    filters.Normalize();
+    const bool has_color_adjustments = filters.hdr != 0 || filters.contrast != 0 ||
+                                       filters.brightness != 0 || filters.saturation != 0 ||
+                                       filters.warmth != 0;
+    const bool has_adjustments = has_color_adjustments || filters.sharpness > 0;
+    const bool preview = filters.enabled && filters.show_in_game && has_adjustments;
+    const bool previous_has_color_adjustments = settings_.filters.hdr != 0 ||
+                                                settings_.filters.contrast != 0 ||
+                                                settings_.filters.brightness != 0 ||
+                                                settings_.filters.saturation != 0 ||
+                                                settings_.filters.warmth != 0;
+    const bool previous_preview = settings_.filters.enabled && settings_.filters.show_in_game &&
+                                  (previous_has_color_adjustments || settings_.filters.sharpness > 0);
+    if (preview != previous_preview) {
+        filter_preview_.Stop();
+        ObsData capture{api_.obs_data_create(), ObsDataReleaser{&api_}};
+        api_.obs_data_set_int(capture.get(), "method", preview ? 2 : kCaptureMethodAuto); // WGC respects exclusion.
+        api_.obs_source_update(display_, capture.get());
+    }
+
+    if (preview && !filter_preview_.Start(api_, display_, monitor_.area, error)) {
+        ObsData capture{api_.obs_data_create(), ObsDataReleaser{&api_}};
+        api_.obs_data_set_int(capture.get(), "method", kCaptureMethodAuto);
+        api_.obs_source_update(display_, capture.get());
+        return false;
+    }
+
+    ObsData color{api_.obs_data_create(), ObsDataReleaser{&api_}};
+    // SDR HDR-look: lift midtones, then add contrast and a little saturation.
+    // This is intentionally separate from HDR encoding / display metadata.
+    const double hdr = filters.hdr / 100.0;
+    api_.obs_data_set_double(color.get(), "gamma", hdr * 0.35);
+    api_.obs_data_set_double(color.get(), "contrast", filters.contrast / 100.0 + hdr * 0.20);
+    api_.obs_data_set_double(color.get(), "brightness", filters.brightness / 100.0);
+    api_.obs_data_set_double(color.get(), "saturation", filters.saturation / 100.0 + hdr * 0.08);
+    const auto red = static_cast<std::uint32_t>(255 + std::min(filters.warmth, 0) * 40 / 100);
+    const auto blue = static_cast<std::uint32_t>(255 - std::max(filters.warmth, 0) * 40 / 100);
+    // OBS stores packed RGBA in native byte order: R in the low byte and A
+    // in the high byte. Keep alpha opaque; the v2 filter converts RGB sRGB.
+    api_.obs_data_set_int(color.get(), "color_multiply", red | (255U << 8) |
+                                                       (blue << 16) | (255U << 24));
+    api_.obs_source_update(color_filter_, color.get());
+    // Do not pay for a full-frame color pass when the profile is neutral.
+    api_.obs_source_set_enabled(color_filter_, filters.enabled && has_color_adjustments);
+    ObsData sharpness{api_.obs_data_create(), ObsDataReleaser{&api_}};
+    api_.obs_data_set_double(sharpness.get(), "sharpness", filters.sharpness / 100.0);
+    api_.obs_source_update(sharpness_filter_, sharpness.get());
+    api_.obs_source_set_enabled(sharpness_filter_, filters.enabled && filters.sharpness > 0);
+    settings_.filters = filters;
+    return true;
 }
 
 bool ObsCaptureEngine::CreateAudioSources(std::string& error) {
@@ -318,8 +386,11 @@ bool ObsCaptureEngine::CreateAudioSources(std::string& error) {
             microphone_sources_.push_back(std::move(audio_source));
         }
     }
-    // WASAPI sources are standalone audio inputs. Keep them active so their
-    // capture callbacks run; mixer masks route samples to encoded tracks.
+    // Keep WASAPI sources active so their capture callbacks run, and route them
+    // into OBS's global audio channels so the encoders receive the samples.
+    std::uint32_t channel = 1;
+    for (const auto& source : desktop_audio_sources_) api_.obs_set_output_source(channel++, source->source);
+    for (const auto& source : microphone_sources_) api_.obs_set_output_source(channel++, source->source);
     return true;
 }
 
@@ -745,6 +816,7 @@ void ObsCaptureEngine::StopOutput(obs_output_t* output) noexcept {
 
 void ObsCaptureEngine::ReleasePipeline() noexcept {
     if (!api_.loaded()) return;
+    filter_preview_.Stop();
     if (recording_output_) {
         StopOutput(recording_output_);
         api_.obs_output_release(recording_output_);
@@ -762,6 +834,10 @@ void ObsCaptureEngine::ReleasePipeline() noexcept {
     api_.obs_set_output_source(0, nullptr);
     if (display_) api_.obs_source_release(display_);
     display_ = nullptr;
+    if (color_filter_) api_.obs_source_release(color_filter_);
+    if (sharpness_filter_) api_.obs_source_release(sharpness_filter_);
+    color_filter_ = nullptr;
+    sharpness_filter_ = nullptr;
 }
 
 void ObsCaptureEngine::ReleaseReplayOutputs(bool mark_interrupted) noexcept {

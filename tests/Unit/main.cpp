@@ -41,6 +41,15 @@ void SettingsRoundTrip() {
     settings.developer_updates = true;
     settings.discord_auto_send = true;
     settings.discord_target_megabytes = 25;
+    settings.filters.enabled = true;
+    settings.filters.show_in_game = false;
+    settings.filters.preset = openreplay::FilterPreset::VividHdr;
+    settings.filters.sharpness = 18;
+    settings.filters.hdr = 65;
+    settings.filters.contrast = 12;
+    settings.filters.saturation = 24;
+    settings.filters.brightness = 0;
+    settings.filters.warmth = 4;
     settings.language = "ru-RU";
     settings.monitor_id = "display:1=value";
     settings.output_directory = std::filesystem::temp_directory_path() / L"Open Replay";
@@ -50,6 +59,7 @@ void SettingsRoundTrip() {
     settings.performance_overlay_position = openreplay::PerformanceOverlayPosition::BottomRight;
     settings.performance_show_fps_lows = false;
     settings.performance_show_frametime_graph = false;
+    settings.performance_frametime_line = true;
     settings.performance_show_gpu_temperature = false;
     settings.performance_show_gpu_clock = false;
     settings.performance_show_gpu_power = false;
@@ -70,6 +80,7 @@ void SettingsRoundTrip() {
     Check(loaded.developer_updates, "developer updates setting did not round-trip");
     Check(loaded.discord_auto_send && loaded.discord_target_megabytes == 25,
           "Discord share settings did not round-trip");
+    Check(loaded.filters == settings.filters, "video filter settings did not round-trip");
     Check(loaded.monitor_id == settings.monitor_id, "escaped setting did not round-trip");
     Check(loaded.output_directory == settings.output_directory, "path setting did not round-trip");
     Check(loaded.replay_seconds == 90, "numeric setting did not round-trip");
@@ -80,7 +91,7 @@ void SettingsRoundTrip() {
     Check(!loaded.performance_show_fps_lows && !loaded.performance_show_frametime_graph &&
               !loaded.performance_show_gpu_temperature && !loaded.performance_show_gpu_clock &&
               !loaded.performance_show_gpu_power && !loaded.performance_show_memory &&
-              loaded.performance_overlay_opacity == 78,
+              loaded.performance_overlay_opacity == 78 && loaded.performance_frametime_line,
            "performance overlay settings did not round-trip");
     Check(loaded.desktop_audio_devices == settings.desktop_audio_devices, "desktop audio devices did not round-trip");
     Check(loaded.microphone_devices == settings.microphone_devices, "microphone devices did not round-trip");
@@ -111,6 +122,23 @@ void DefaultSettingsUseEnglishAndMp4() {
     Check(!settings.developer_updates, "developer updates were enabled by default");
     Check(!settings.discord_auto_send && settings.discord_target_megabytes == 8,
           "Discord share defaults were not applied");
+    Check(!settings.filters.enabled && !settings.filters.show_in_game &&
+              settings.filters.preset == openreplay::FilterPreset::Default,
+          "video filter defaults were not applied");
+}
+
+void VideoFilterPresetsHaveDefaults() {
+    openreplay::VideoFilters filters;
+    filters.ApplyPreset(openreplay::FilterPreset::Default);
+    Check(!filters.enabled && filters.sharpness == 0 && filters.hdr == 0 && filters.contrast == 0 &&
+              filters.saturation == 0 && filters.brightness == 0 && filters.warmth == 0,
+          "default video filter preset was not neutral");
+    filters.ApplyPreset(openreplay::FilterPreset::Crisp);
+    Check(filters.enabled && filters.sharpness == 0 && filters.hdr <= 25,
+          "crisp video filter preset was not performance friendly");
+    filters.sharpness = 100;
+    filters.Normalize();
+    Check(filters.sharpness == 25, "sharpness was not capped for performance");
 }
 
 void UpdateMetadataParsesAndComparesVersions() {
@@ -141,6 +169,26 @@ void UpdateMetadataParsesAndComparesVersions() {
     Check(manifest.has_value(), "update manifest was not parsed");
     Check(openreplay::IsValidUpdate(*manifest, openreplay::kVersion, "stable"),
           "valid stable update was rejected");
+
+    auto same_base_stable = *manifest;
+    same_base_stable.version = "0.1.10";
+    same_base_stable.tag = "v0.1.10";
+    same_base_stable.asset_name = "OpenReplay-0.1.10-win-x64.zip";
+    same_base_stable.asset_url =
+        "https://github.com/G4F-Elite/OpenReplay/releases/download/v0.1.10/" +
+        same_base_stable.asset_name;
+    Check(!openreplay::IsValidUpdate(same_base_stable, "0.1.10-dev.25", "stable", "dev"),
+          "same-base stable release was offered over a developer build");
+
+    auto newer_stable = same_base_stable;
+    newer_stable.version = "0.1.11";
+    newer_stable.tag = "v0.1.11";
+    newer_stable.asset_name = "OpenReplay-0.1.11-win-x64.zip";
+    newer_stable.asset_url =
+        "https://github.com/G4F-Elite/OpenReplay/releases/download/v0.1.11/" +
+        newer_stable.asset_name;
+    Check(openreplay::IsValidUpdate(newer_stable, "0.1.10-dev.25", "stable", "dev"),
+          "newer stable base release was rejected for a developer build");
     auto invalid = *manifest;
     invalid.asset_url = "https://example.com/update.zip";
     Check(!openreplay::IsValidUpdate(invalid, openreplay::kVersion, "stable"),
@@ -156,6 +204,9 @@ void UpdateMetadataParsesAndComparesVersions() {
           "valid developer update was rejected");
     Check(!openreplay::IsValidUpdate(developer, openreplay::kVersion, "stable"),
           "developer update was accepted on the stable channel");
+    developer.version = "0.1.10-dev.10";
+    Check(openreplay::IsValidUpdate(developer, "0.1.10", "dev", "stable"),
+          "opted-in developer update was rejected over the matching stable release");
     developer.tag = "unexpected";
     Check(!openreplay::IsValidUpdate(developer, openreplay::kVersion, "dev"),
           "developer update with an unexpected tag was accepted");
@@ -193,6 +244,8 @@ void UpdatesRespectReleasePrecedence() {
                           developer.asset_name;
     Check(!openreplay::IsValidUpdate(developer, "0.1.9", "dev"),
           "developer build replaced its stable release");
+    Check(openreplay::IsValidUpdate(developer, "0.1.9", "dev", "stable"),
+          "developer channel did not replace the installed stable release when opted in");
     developer.version = "0.1.10-dev.1";
     Check(openreplay::IsValidUpdate(developer, "0.1.9", "dev"),
           "newer developer build was not offered after a stable release");
@@ -257,6 +310,13 @@ void SettingsChangeClassification() {
     changed.bitrate_kbps += 1000;
     Check(!openreplay::CapturePipelineSettingsEqual(current, changed),
           "an encoder bitrate change did not require a capture pipeline reload");
+
+    changed = current;
+    changed.filters.enabled = true;
+    Check(!openreplay::CapturePipelineSettingsEqual(current, changed),
+          "video filter changes did not require a capture pipeline reload");
+    Check(openreplay::CapturePipelineCoreSettingsEqual(current, changed),
+          "video filter changes incorrectly changed core capture settings");
 
     changed = current;
     changed.microphone_devices.front().volume_percent = 75;
@@ -339,6 +399,8 @@ void ReplayDurationCommandParses() {
           "lightweight replay output reload command was not parsed");
     Check(openreplay::ParseCommand("reload_audio_sources").type == openreplay::CommandType::ReloadAudioSources,
           "lightweight audio source reload command was not parsed");
+    Check(openreplay::ParseCommand("reload_video_filters").type == openreplay::CommandType::ReloadVideoFilters,
+          "lightweight video filter reload command was not parsed");
 }
 
 void AudioDevicesNormalize() {
@@ -454,6 +516,18 @@ void ReplaySizeEstimateIncludesEncodedAudioAndOverhead() {
           "replay size estimate did not include all encoded tracks and overhead");
 }
 
+void GameNamesRoundTripThroughClipFiles() {
+    Check(openreplay::GameFileName(L"  ELDEN RING\u2122: Shadow / Erdtree?  ") == L"ELDEN RING Shadow Erdtree",
+          "game title was not made safe for a file name");
+    Check(openreplay::GameFileName(L"\u2122 ...").empty(), "game title of only symbols left a file name");
+    Check(openreplay::ClipGameName(L"C:/Clips/Dota 2_2026-10-27_16-48-15_Replay_15s.mp4") == L"Dota 2",
+          "game name was not read back from a replay");
+    Check(openreplay::ClipGameName(L"Dota 2_2026-10-27_16-48-15_Replay_15s-discord.mp4") == L"Dota 2",
+          "game name was not read back from a Discord copy");
+    Check(openreplay::ClipGameName(L"OpenReplay_2026-10-27_16-48-15_Replay_15s.mp4").empty(),
+          "a clip without a game got one");
+}
+
 void DiscordBitrateTargetsConfiguredSize() {
     const auto bitrate = openreplay::DiscordVideoBitrate(std::chrono::seconds{15}, 8);
     Check(bitrate >= 3900000 && bitrate <= 4100000,
@@ -473,6 +547,7 @@ int wmain() {
         StateMachinePreservesIntent();
         SettingsRoundTrip();
         DefaultSettingsUseEnglishAndMp4();
+        VideoFilterPresetsHaveDefaults();
         UpdateMetadataParsesAndComparesVersions();
         UpdatesRespectReleasePrecedence();
         UpdateSignatureFixtureVerifies();
@@ -491,6 +566,7 @@ int wmain() {
         QualityPresetsApplyEncoderLevels();
         ReplaySizeEstimateIncludesEncodedAudioAndOverhead();
         DiscordBitrateTargetsConfiguredSize();
+        GameNamesRoundTripThroughClipFiles();
         std::cout << "OpenReplay unit tests passed\n";
         return 0;
     } catch (const std::exception& error) {

@@ -22,6 +22,7 @@
     <ClInclude Include="ICaptureEngine.h" />
     <ClInclude Include="ObsApi.h" />
     <ClInclude Include="ObsCaptureEngine.h" />
+    <ClInclude Include="FilterPreview.h" />
     <ClInclude Include="ScreenshotService.h" />
   </ItemGroup>
   <ItemGroup>
@@ -29,6 +30,7 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="ObsApi.cpp" />
     <ClCompile Include="ObsCaptureEngine.cpp" />
+    <ClCompile Include="FilterPreview.cpp" />
     <ClCompile Include="ScreenshotService.cpp" />
   </ItemGroup>
   <ItemGroup><ProjectReference Include="..\Shared\OpenReplay.Shared.vcxproj"><Project>{A1A75F60-4A93-4EA8-916A-EA08F9DE1081}</Project></ProjectReference></ItemGroup>

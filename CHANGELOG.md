@@ -5,7 +5,30 @@ Notable user-facing changes are documented here. Development builds use the
 
 ## [Unreleased]
 
-No changes yet.
+## [0.2.0] - 2026-10-27
+
+### Added
+
+- Added NVIDIA-style video filters for recordings and replays: sharpness, HDR look, color grading, presets, and optional borderless in-game preview.
+- Saved replays into a folder per game, named after the fullscreen game they were captured from.
+
+### Changed
+
+- Redesigned the overlay, settings, clip library, performance overlay, and notifications around a new dark palette, with settings grouped into cards.
+- Drew the frametime graph as one bar per frame: its width is the frame's duration, and it turns yellow below 57 FPS and red below 30 FPS.
+- Listed compressed Discord copies under their original clips in the clip library.
+
+### Fixed
+
+- Fixed Discord compression failing with "a valid type has not been set for this stream".
+- Counted only game frames in the performance overlay instead of its own repaints.
+- Kept the performance overlay above fullscreen games that make themselves topmost.
+- Kept the overlay panel at the screen edge over fullscreen games instead of shifting it beside a hidden taskbar.
+- Stopped repeated Clips clicks from reloading the clip library and freezing the overlay.
+- Kept the overlay window hidden unless it is explicitly shown, so background startup cannot leave a blank window that only Alt+Z dismisses.
+- Explicitly hid the main window during background startup after updates.
+- Routed active WASAPI sources through OBS audio channels so replay encoders receive the audio shown by the meters.
+- Allowed an opted-in developer build to replace an installed stable build with the same base version.
 
 ## [0.1.10] - 2026-09-23
 
@@ -34,7 +57,7 @@ No changes yet.
 
 ### Fixed
 
-- Kept WASAPI desktop and microphone sources active so clips capture audio instead of silence, and routed them through mixer masks instead of output channels.
+- Kept WASAPI desktop and microphone sources active so clips capture audio, routing them through OBS audio channels and mixer masks.
 - Let OBS select the display-capture method automatically and validated the selected monitor size before initializing video.
 - Shipped `obs-ffmpeg-mux.exe` inside the bundled OBS runtime directory and embedded a host manifest, so installed builds find the runtime and support long paths and per-monitor DPI.
 - Prevented the post-update confirmation from opening an empty standalone window during background startup.
@@ -105,7 +128,8 @@ No changes yet.
 
 - Initial OpenReplay release with instant replay, recording, screenshots, audio-device selection, and the WinUI overlay.
 
-[Unreleased]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.10...HEAD
+[Unreleased]: https://github.com/G4F-Elite/OpenReplay/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.10...v0.2.0
 [0.1.10]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.4...v0.1.9
 [0.1.3]: https://github.com/G4F-Elite/OpenReplay/compare/v0.1.2...v0.1.3

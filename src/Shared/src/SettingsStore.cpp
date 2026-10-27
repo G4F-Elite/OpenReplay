@@ -41,6 +41,15 @@ bool HasKey(const std::map<std::string, std::string>& values, std::string_view k
     return values.contains(std::string{key});
 }
 
+int ParseInt(const std::map<std::string, std::string>& values, std::string_view key, int fallback) {
+    const auto it = values.find(std::string{key});
+    if (it == values.end()) return fallback;
+    int result{};
+    const auto end = it->second.data() + it->second.size();
+    const auto parsed = std::from_chars(it->second.data(), end, result);
+    return parsed.ec == std::errc{} && parsed.ptr == end ? result : fallback;
+}
+
 std::string ParseString(const std::map<std::string, std::string>& values, std::string_view key,
                          std::string fallback = {}) {
     const auto it = values.find(std::string{key});
@@ -93,6 +102,16 @@ Settings SettingsStore::Load() const {
     result.developer_updates = ParseBool(values, "developer_updates", result.developer_updates);
     result.discord_auto_send = ParseBool(values, "discord_auto_send", result.discord_auto_send);
     result.capture_cursor = ParseBool(values, "capture_cursor", result.capture_cursor);
+    result.filters.enabled = ParseBool(values, "filters_enabled", result.filters.enabled);
+    result.filters.show_in_game = ParseBool(values, "filters_show_in_game", result.filters.show_in_game);
+    result.filters.preset = static_cast<FilterPreset>(
+        ParseInt(values, "filters_preset", static_cast<int>(result.filters.preset)));
+    result.filters.sharpness = ParseInt(values, "filters_sharpness", 0);
+    result.filters.hdr = ParseInt(values, "filters_hdr", 0);
+    result.filters.contrast = ParseInt(values, "filters_contrast", 0);
+    result.filters.saturation = ParseInt(values, "filters_saturation", 0);
+    result.filters.brightness = ParseInt(values, "filters_brightness", 0);
+    result.filters.warmth = ParseInt(values, "filters_warmth", 0);
     result.microphone_enabled = ParseBool(values, "microphone_enabled", result.microphone_enabled);
     result.replay_seconds = ParseUInt(values, "replay_seconds", result.replay_seconds);
     result.replay_max_megabytes = ParseUInt(values, "replay_max_megabytes", result.replay_max_megabytes);
@@ -146,6 +165,8 @@ Settings SettingsStore::Load() const {
         values, "performance_show_frametime", result.performance_show_frametime);
     result.performance_show_frametime_graph = ParseBool(
         values, "performance_show_frametime_graph", result.performance_show_frametime_graph);
+    result.performance_frametime_line = ParseBool(
+        values, "performance_frametime_line", result.performance_frametime_line);
     result.performance_show_gpu_usage = ParseBool(
         values, "performance_show_gpu_usage", result.performance_show_gpu_usage);
     result.performance_show_gpu_temperature = ParseBool(
@@ -178,13 +199,22 @@ void SettingsStore::Save(const Settings& input) const {
     {
         std::ofstream output(temporary, std::ios::trunc);
         if (!output) throw std::runtime_error("Unable to open temporary settings file");
-        output << "version=12\n"
+        output << "version=13\n"
                << "instant_replay_enabled=" << (settings.instant_replay_enabled ? "true" : "false") << '\n'
                << "start_with_windows=" << (settings.start_with_windows ? "true" : "false") << '\n'
                << "automatic_updates=" << (settings.automatic_updates ? "true" : "false") << '\n'
                << "developer_updates=" << (settings.developer_updates ? "true" : "false") << '\n'
                << "discord_auto_send=" << (settings.discord_auto_send ? "true" : "false") << '\n'
                << "capture_cursor=" << (settings.capture_cursor ? "true" : "false") << '\n'
+               << "filters_enabled=" << (settings.filters.enabled ? "true" : "false") << '\n'
+               << "filters_show_in_game=" << (settings.filters.show_in_game ? "true" : "false") << '\n'
+               << "filters_preset=" << static_cast<int>(settings.filters.preset) << '\n'
+               << "filters_sharpness=" << settings.filters.sharpness << '\n'
+               << "filters_hdr=" << settings.filters.hdr << '\n'
+               << "filters_contrast=" << settings.filters.contrast << '\n'
+               << "filters_saturation=" << settings.filters.saturation << '\n'
+               << "filters_brightness=" << settings.filters.brightness << '\n'
+               << "filters_warmth=" << settings.filters.warmth << '\n'
                << "microphone_enabled=" << (settings.microphone_enabled ? "true" : "false") << '\n'
                << "replay_seconds=" << settings.replay_seconds << '\n'
                << "replay_max_megabytes=" << settings.replay_max_megabytes << '\n'
@@ -228,6 +258,7 @@ void SettingsStore::Save(const Settings& input) const {
                << "performance_show_fps_lows=" << (settings.performance_show_fps_lows ? "true" : "false") << '\n'
                << "performance_show_frametime=" << (settings.performance_show_frametime ? "true" : "false") << '\n'
                << "performance_show_frametime_graph=" << (settings.performance_show_frametime_graph ? "true" : "false") << '\n'
+               << "performance_frametime_line=" << (settings.performance_frametime_line ? "true" : "false") << '\n'
                << "performance_show_gpu_usage=" << (settings.performance_show_gpu_usage ? "true" : "false") << '\n'
                << "performance_show_gpu_temperature=" << (settings.performance_show_gpu_temperature ? "true" : "false") << '\n'
                << "performance_show_gpu_clock=" << (settings.performance_show_gpu_clock ? "true" : "false") << '\n'

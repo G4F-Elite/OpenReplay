@@ -101,6 +101,12 @@ MonitorArea ForegroundMonitorArea(HWND fallback_window) noexcept {
     return result;
 }
 
+bool IsFullscreenWindow(HWND window) noexcept {
+    MONITORINFO info{sizeof(info)};
+    return GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &info) &&
+           CoversMonitor(window, info.rcMonitor);
+}
+
 UINT WindowDpi(HWND window) noexcept {
     const auto dpi = window ? GetDpiForWindow(window) : 0U;
     return dpi ? dpi : 96U;

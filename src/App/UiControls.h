@@ -13,6 +13,7 @@ struct UiTheme {
     BrushType card_hover{nullptr};
     BrushType inset{nullptr};
     BrushType border{nullptr};
+    BrushType control_border{nullptr};
     BrushType accent{nullptr};
     BrushType accent_hover{nullptr};
     BrushType accent_pressed{nullptr};
@@ -23,6 +24,7 @@ struct UiTheme {
     BrushType danger{nullptr};
     BrushType quiet{nullptr};
     BrushType muted{nullptr};
+    BrushType faint{nullptr};
     BrushType track{nullptr};
     BrushType track_disabled{nullptr};
 };
@@ -47,6 +49,16 @@ void AddRow(winrt::Microsoft::UI::Xaml::Controls::Grid const& grid, double value
             winrt::Microsoft::UI::Xaml::GridUnitType type);
 void AddColumn(winrt::Microsoft::UI::Xaml::Controls::Grid const& grid, double value,
                winrt::Microsoft::UI::Xaml::GridUnitType type);
+
+// Clip naming shared by the dashboard and the clip library.
+// Clips in the output folder and in its per-game folders. Discord copies are left out: they belong to their originals.
+[[nodiscard]] std::vector<std::filesystem::directory_entry> ListClips(const std::filesystem::path& directory);
+// The game the clip was saved from, or its kind when there is none.
+[[nodiscard]] std::wstring ClipTitle(const std::filesystem::path& path, bool english);
+// "Today" / "Yesterday" / "12 Oct" in local time.
+[[nodiscard]] std::wstring ClipDay(std::filesystem::file_time_type written, bool english);
+// "20:41" in local time.
+[[nodiscard]] std::wstring ClipClock(std::filesystem::file_time_type written);
 
 class ControlFactory {
 public:

@@ -52,15 +52,15 @@ App::App() {
     openreplay::ui::TraceStartup(L"Application constructor: complete");
 }
 
-void App::OnLaunched(Microsoft::UI::Xaml::LaunchActivatedEventArgs const& args) {
+void App::OnLaunched(Microsoft::UI::Xaml::LaunchActivatedEventArgs const&) {
     openreplay::ui::TraceStartup(L"OnLaunched: begin");
     auto main_window = winrt::make_self<MainWindow>();
     const auto options = ParseLaunchOptions();
     main_window->ConfigureUpdateLaunch(options.post_update_version, options.update_health);
     openreplay::ui::TraceStartup(L"OnLaunched: MainWindow created");
     window_ = *main_window;
-    (void)args;
-    if (!options.background) main_window->ShowOnLaunch();
+    if (options.background) main_window->HideOnLaunch();
+    else main_window->ShowOnLaunch();
     main_window->BeginUpdateChecks();
     openreplay::ui::TraceStartup(L"OnLaunched: complete");
 }

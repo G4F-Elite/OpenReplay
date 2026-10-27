@@ -53,6 +53,8 @@ struct Handle {
 struct FramePoint {
     Clock::time_point received;
     double milliseconds{};
+    // QueryPerformanceCounter tick at which this frame ended (its present).
+    long long present{};
 };
 
 std::optional<DWORD> ParentProcessId() {
@@ -104,6 +106,31 @@ HWND TargetWindow(DWORD process_id) {
         return TRUE;
     }, reinterpret_cast<LPARAM>(&search));
     return search.window;
+}
+
+// The performance overlay repaints up to 60 times a second; a desktop update confined to it is not a game frame.
+bool OverlayOnlyUpdate(IDXGIOutputDuplication* output, const DXGI_OUTDUPL_FRAME_INFO& frame, const RECT& overlay,
+                       std::vector<std::uint8_t>& metadata) {
+    if (IsRectEmpty(&overlay) || !frame.TotalMetadataBufferSize) return false;
+    metadata.resize(frame.TotalMetadataBufferSize);
+    const auto inside = [&overlay](const RECT& rect) {
+        return rect.left >= overlay.left && rect.top >= overlay.top &&
+               rect.right <= overlay.right && rect.bottom <= overlay.bottom;
+    };
+    UINT size = 0;
+    const auto moves = reinterpret_cast<DXGI_OUTDUPL_MOVE_RECT*>(metadata.data());
+    if (FAILED(output->GetFrameMoveRects(static_cast<UINT>(metadata.size()), moves, &size))) return false;
+    const auto move_count = size / sizeof(DXGI_OUTDUPL_MOVE_RECT);
+    for (UINT index = 0; index < move_count; ++index) {
+        if (!inside(moves[index].DestinationRect)) return false;
+    }
+    const auto dirty = reinterpret_cast<RECT*>(metadata.data());
+    if (FAILED(output->GetFrameDirtyRects(static_cast<UINT>(metadata.size()), dirty, &size))) return false;
+    const auto dirty_count = size / sizeof(RECT);
+    for (UINT index = 0; index < dirty_count; ++index) {
+        if (!inside(dirty[index])) return false;
+    }
+    return move_count + dirty_count > 0;
 }
 
 class FrameCapture final {
@@ -198,6 +225,8 @@ public:
             return 1000.0 / average(slowest);
         };
 
+        // QPC is system-wide, so the overlay can place frames on its own timeline exactly.
+        const auto present = frames.empty() ? 0LL : frames.back().present;
         std::string history;
         const auto first = frames.size() > 120 ? frames.size() - 120 : 0;
         for (std::size_t index = first; index < frames.size(); ++index) {
@@ -205,8 +234,8 @@ public:
             history += std::format("{:.4f}", frames[index].milliseconds);
         }
         return std::format("ok\npid={}\nfps={:.2f}\nlow1={:.2f}\nlow01={:.2f}\nframetime={:.2f}\n"
-                           "history={}\nerror={}\nsource=DXGI Desktop Duplication",
-                           process_id, fps, low(0.01), low(0.001), frame_time, history, error);
+                           "history={}\npresent={}\nerror={}\nsource=DXGI Desktop Duplication",
+                           process_id, fps, low(0.01), low(0.001), frame_time, history, present, error);
     }
 
 private:
@@ -257,6 +286,12 @@ private:
     }
 
     void ReadFrames(HMONITOR monitor, Duplication duplication) noexcept {
+        // Physical pixels, so the overlay's window rect matches the duplication's dirty rects at any scaling.
+        SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        MONITORINFO monitor_info{sizeof(monitor_info)};
+        GetMonitorInfoW(monitor, &monitor_info);
+        HWND overlay_window = nullptr;
+        std::vector<std::uint8_t> metadata;
         LARGE_INTEGER frequency{};
         QueryPerformanceFrequency(&frequency);
         std::optional<std::int64_t> last_timestamp;
@@ -285,7 +320,13 @@ private:
                 break;
             }
 
-            if (frame.LastPresentTime.QuadPart > 0 && frequency.QuadPart > 0) {
+            if (!IsWindow(overlay_window)) overlay_window = FindWindowW(L"OpenReplay.PerformanceOverlay", nullptr);
+            RECT overlay{};
+            if (overlay_window && IsWindowVisible(overlay_window) && GetWindowRect(overlay_window, &overlay)) {
+                OffsetRect(&overlay, -monitor_info.rcMonitor.left, -monitor_info.rcMonitor.top);
+            }
+            if (frame.LastPresentTime.QuadPart > 0 && frequency.QuadPart > 0 &&
+                !OverlayOnlyUpdate(duplication.output.get(), frame, overlay, metadata)) {
                 const auto timestamp = frame.LastPresentTime.QuadPart;
                 if (last_timestamp && timestamp > *last_timestamp) {
                     const auto accumulated = std::max(1U, frame.AccumulatedFrames);
@@ -293,8 +334,10 @@ private:
                                               static_cast<double>(frequency.QuadPart) / accumulated;
                     if (milliseconds > 0.05 && milliseconds <= 1000.0) {
                         std::scoped_lock lock{mutex_};
+                        const auto step = (timestamp - *last_timestamp) / static_cast<long long>(accumulated);
                         for (UINT index = 0; index < accumulated; ++index) {
-                            frame_times_.push_back({Clock::now(), milliseconds});
+                            const auto present = timestamp - static_cast<long long>(accumulated - 1 - index) * step;
+                            frame_times_.push_back({Clock::now(), milliseconds, present});
                         }
                         if (frame_times_.size() > 7200) {
                             frame_times_.erase(frame_times_.begin(), frame_times_.begin() + 1200);

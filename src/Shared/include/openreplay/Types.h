@@ -16,6 +16,26 @@ enum class VideoCodec { H264, Hevc, Av1 };
 enum class QualityPreset { Performance, Balanced, HighQuality, Custom };
 enum class OutputFormat { Mkv, Mp4 };
 enum class PerformanceOverlayPosition { TopRight, BottomRight };
+// Keep the first four values stable: they are persisted in settings.conf.
+enum class FilterPreset { Custom, Crisp, VividHdr, Cinema, Default };
+
+struct VideoFilters {
+    bool enabled{false};
+    // Full-screen preview adds another compositing pass. Keep it opt-in so
+    // recording filters do not unexpectedly reduce game FPS.
+    bool show_in_game{false};
+    FilterPreset preset{FilterPreset::Default};
+    int sharpness{0};
+    int hdr{0};
+    int contrast{0};
+    int saturation{0};
+    int brightness{0};
+    int warmth{0};
+
+    void Normalize() noexcept;
+    void ApplyPreset(FilterPreset value) noexcept;
+    bool operator==(const VideoFilters&) const = default;
+};
 
 struct ReplayHotkey {
     bool enabled{true};
@@ -40,6 +60,7 @@ struct Settings {
     bool developer_updates{false};
     bool discord_auto_send{false};
     bool capture_cursor{true};
+    VideoFilters filters;
     bool microphone_enabled{true};
     std::uint32_t replay_seconds{60};
     std::uint32_t replay_max_megabytes{2048};
@@ -68,6 +89,7 @@ struct Settings {
     bool performance_show_fps_lows{true};
     bool performance_show_frametime{true};
     bool performance_show_frametime_graph{true};
+    bool performance_frametime_line{false};
     bool performance_show_gpu_usage{true};
     bool performance_show_gpu_temperature{true};
     bool performance_show_gpu_clock{true};
@@ -136,5 +158,9 @@ std::uint64_t EstimateReplaySizeBytes(const Settings& settings) noexcept;
 std::uint32_t DiscordVideoBitrate(std::chrono::milliseconds duration,
                                   std::uint32_t target_megabytes,
                                   std::uint32_t audio_bitrate = 128000) noexcept;
+// A window title made safe for a file name: no reserved characters or trademark signs, at most 60 characters.
+std::wstring GameFileName(std::wstring_view title);
+// The game a clip was saved from, read back from its file name; empty when it has none.
+std::wstring ClipGameName(const std::filesystem::path& path);
 
 }  // namespace openreplay

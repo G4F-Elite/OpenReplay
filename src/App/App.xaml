@@ -9,11 +9,11 @@
             <ResourceDictionary.MergedDictionaries>
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>
-            <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="#00C16A" />
-            <SolidColorBrush x:Key="AccentFillColorSecondaryBrush" Color="#00DC82" />
-            <SolidColorBrush x:Key="AccentFillColorTertiaryBrush" Color="#007F45" />
-            <SolidColorBrush x:Key="AccentTextFillColorPrimaryBrush" Color="#00DC82" />
-            <SolidColorBrush x:Key="TextOnAccentFillColorPrimaryBrush" Color="#052E16" />
+            <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="#76B900" />
+            <SolidColorBrush x:Key="AccentFillColorSecondaryBrush" Color="#8BD400" />
+            <SolidColorBrush x:Key="AccentFillColorTertiaryBrush" Color="#4D7900" />
+            <SolidColorBrush x:Key="AccentTextFillColorPrimaryBrush" Color="#8BD400" />
+            <SolidColorBrush x:Key="TextOnAccentFillColorPrimaryBrush" Color="#101900" />
         </ResourceDictionary>
     </Application.Resources>
 </Application>

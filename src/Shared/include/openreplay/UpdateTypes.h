@@ -38,7 +38,7 @@ bool IsStableReleasePreferred(std::string_view stable_version,
                               std::string_view developer_version) noexcept;
 std::optional<UpdateManifest> ParseUpdateManifest(std::string_view json);
 bool IsValidUpdate(const UpdateManifest& manifest, std::string_view current_version,
-                   std::string_view channel) noexcept;
+                   std::string_view channel, std::string_view installed_channel = {}) noexcept;
 bool VerifyUpdateSignature(std::span<const std::uint8_t> content,
                            std::span<const std::uint8_t> signature) noexcept;
 

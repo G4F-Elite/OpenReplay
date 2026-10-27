@@ -22,6 +22,7 @@ enum class CommandType {
     Screenshot,
     ReloadSettings,
     ReloadAudioSources,
+    ReloadVideoFilters,
     ReloadReplayOutputs,
     Shutdown,
     Unknown,

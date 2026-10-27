@@ -134,6 +134,27 @@ Response CaptureController::Handle(const Command& command) {
             return StatusResponse(StatusLocked());
         }
 
+        case CommandType::ReloadVideoFilters: {
+            auto updated = settings_store_.Load();
+            if (!CapturePipelineCoreSettingsEqual(settings_, updated) ||
+                !AudioSourceSettingsEqual(settings_, updated) ||
+                !ReplayOutputSettingsEqual(settings_, updated)) {
+                return ErrorResponse("Other capture settings require a full pipeline reload");
+            }
+            std::string error;
+            if (!pipeline_ready_) {
+                settings_ = std::move(updated);
+                if (!InitializePipeline(error)) {
+                    if (replay_state_.desired()) ScheduleRecovery(error);
+                    return ErrorResponse(std::move(error));
+                }
+            } else {
+                if (!engine_.ReloadVideoFilters(updated.filters, error)) return ErrorResponse(std::move(error));
+                settings_.filters = updated.filters;
+            }
+            return StatusResponse(StatusLocked());
+        }
+
         case CommandType::ReloadAudioSources: {
             if (engine_.RecordingActive()) return ErrorResponse("Stop recording before changing audio devices");
             if (engine_.ReplaySaveState().in_progress) {
@@ -142,7 +163,7 @@ Response CaptureController::Handle(const Command& command) {
             auto updated = settings_store_.Load();
             WriteHostLog("Applying an audio-source-only settings reload");
             if (!CapturePipelineCoreSettingsEqual(settings_, updated) ||
-                !ReplayOutputSettingsEqual(settings_, updated)) {
+                !ReplayOutputSettingsEqual(settings_, updated) || settings_.filters != updated.filters) {
                 return ErrorResponse("Other capture settings require a full pipeline reload");
             }
             std::string error;

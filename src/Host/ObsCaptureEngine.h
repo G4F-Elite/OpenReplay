@@ -3,6 +3,7 @@
 #include "ICaptureEngine.h"
 #include "ObsApi.h"
 #include "ScreenshotService.h"
+#include "FilterPreview.h"
 
 #include <array>
 #include <atomic>
@@ -27,6 +28,7 @@ public:
 
     bool Initialize(const Settings& settings, std::string& error) override;
     bool ReloadAudioSources(const Settings& settings, std::string& error) override;
+    bool ReloadVideoFilters(const VideoFilters& filters, std::string& error) override;
     void Shutdown() noexcept override;
     bool Healthy() const noexcept override;
     bool StartReplay(std::string& error) override;
@@ -83,6 +85,9 @@ private:
     Settings settings_;
     Monitor monitor_;
     obs_source_t* display_{};
+    obs_source_t* color_filter_{};
+    obs_source_t* sharpness_filter_{};
+    FilterPreview filter_preview_;
     std::vector<std::unique_ptr<AudioSource>> desktop_audio_sources_;
     std::vector<std::unique_ptr<AudioSource>> microphone_sources_;
     obs_encoder_t* video_encoder_{};

@@ -47,6 +47,11 @@ private:
         std::optional<std::uint64_t> memory_total;
     };
 
+    struct FrameMark {
+        std::chrono::steady_clock::time_point end;
+        double milliseconds{};
+    };
+
     struct NvmlDevice;
     using NvmlDeviceHandle = NvmlDevice*;
     struct NvmlUtilization {
@@ -69,6 +74,7 @@ private:
     using NvmlDeviceGetPowerUsage = int(__cdecl*)(NvmlDeviceHandle, unsigned int*);
 
     static constexpr UINT_PTR kRefreshTimer = 1;
+    static constexpr UINT_PTR kAnimationTimer = 2;
     static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
 
     bool InitializeNvml();
@@ -86,14 +92,18 @@ private:
     [[nodiscard]] std::string TelemetryCommand(std::string_view command) const;
     void PositionWindow();
     void Paint(HDC dc, const RECT& bounds);
-    [[nodiscard]] int EnabledMetricCount() const noexcept;
+    [[nodiscard]] int ContentHeight() const noexcept;
 
     HWND owner_{nullptr};
     HWND window_{nullptr};
     bool visible_{false};
+    HWND topmost_rival_{nullptr};
+    int topmost_raises_{0};
     bool english_{false};
     Settings settings_{};
     Sample sample_{};
+    std::vector<FrameMark> frame_history_;
+    double graph_scale_ms_{0.0};
     HMODULE nvml_module_{nullptr};
     NvmlDeviceHandle nvml_device_{nullptr};
     bool nvml_initialized_{false};

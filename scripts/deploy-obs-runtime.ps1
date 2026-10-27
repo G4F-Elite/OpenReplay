@@ -75,7 +75,7 @@ $helperFiles = @(
     'obs-amf-test.exe',
     'obs-qsv-test.exe'
 )
-$plugins = @('win-capture', 'win-wasapi', 'obs-ffmpeg', 'obs-nvenc', 'obs-qsv11', 'obs-x264')
+$plugins = @('win-capture', 'win-wasapi', 'obs-ffmpeg', 'obs-nvenc', 'obs-qsv11', 'obs-x264', 'obs-filters')
 
 foreach ($file in $binaryFiles) {
     Copy-Item -LiteralPath (Join-Path $extracted "bin\64bit\$file") -Destination $binaryTarget

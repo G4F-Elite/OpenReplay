@@ -1787,6 +1787,7 @@ void MainWindow::ShowOnLaunch() {
     const bool desktop = openreplay::ui::ForegroundMonitorArea(window_handle).desktop;
     if (visible_ || !PositionOverlayWindow()) return;
     visible_ = true;
+    RefreshRecentClips();
     Microsoft::UI::Xaml::Window window = *this;
     if (desktop) {
         window.AppWindow().Show(false);

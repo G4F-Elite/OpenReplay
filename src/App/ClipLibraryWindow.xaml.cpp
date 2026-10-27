@@ -622,6 +622,7 @@ void ClipLibraryWindow::BuildUi() {
     copy_content.Children().Append(copy_label_);
     copy_hint_ = Text(L"", 11, theme.primary_text);
     copy_hint_.Opacity(0.7);
+    copy_hint_.Visibility(Visibility::Collapsed);
     copy_content.Children().Append(copy_hint_);
     discord_copy_button_.Content(copy_content);
     discord_copy_button_.Click([this](auto&&, auto&&) { ShareSelectedClip(false); });
@@ -658,7 +659,7 @@ void ClipLibraryWindow::ApplyLanguage() {
     webhook_button_.Visibility(webhook_available_ ? Visibility::Visible : Visibility::Collapsed);
     if (selected_clip_.empty()) {
         selected_title_.Text(english_ ? L"Select a clip" : L"Выберите клип");
-        copy_hint_.Text(L"");
+        UpdateCopyHint();
     } else {
         UpdateCopyHint();
     }
@@ -809,6 +810,8 @@ void ClipLibraryWindow::RefreshClips() {
         if (const auto copy = copy_of(clip.path); !copy.empty()) add_row(copy, true);
     }
     UpdateSelectionStyles();
+    // Start on the newest clip, so the library never opens with its actions disabled.
+    if (selected_clip_.empty()) SelectClip(clips.front().path);
     LoadClipVisualsAsync(std::move(visuals), generation);
 }
 
@@ -829,7 +832,7 @@ void ClipLibraryWindow::ResetSelection() {
     selected_title_.Text(english_ ? L"Select a clip" : L"Выберите клип");
     selected_metadata_.Text(L"");
     selected_file_.Text(L"");
-    copy_hint_.Text(L"");
+    UpdateCopyHint();
     timeline_.Value(0);
     playback_time_.Text(L"00:00 / 00:00");
     play_icon_.Glyph(L"\xE768");
@@ -857,6 +860,9 @@ void ClipLibraryWindow::UpdateCopyHint() {
     } else {
         copy_hint_.Text((english_ ? L"no compression · " : L"без сжатия · ") + SizeText(size, english_));
     }
+    // An empty hint still takes a line and pushes the label off center.
+    copy_hint_.Visibility(copy_hint_.Text().empty() ? Microsoft::UI::Xaml::Visibility::Collapsed
+                                                    : Microsoft::UI::Xaml::Visibility::Visible);
 }
 
 void ClipLibraryWindow::SelectClip(const std::filesystem::path& path) {

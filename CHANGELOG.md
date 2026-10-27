@@ -8,10 +8,13 @@ Notable user-facing changes are documented here. Development builds use the
 ### Changed
 
 - Showed a found update in its own card in Settings, with the download and release-notes buttons side by side.
+- Opened the clip library on the newest clip, so the player and Copy button are ready right away.
 
 ### Fixed
 
 - Stopped a blank window from appearing after OpenReplay starts in the background, which only Alt+Z could dismiss.
+- Centered the Copy label when no clip is selected.
+- Showed recent clips on Home when OpenReplay starts with the panel open.
 
 ## [0.2.0] - 2026-10-27
 

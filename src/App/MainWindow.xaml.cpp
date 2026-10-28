@@ -4,6 +4,7 @@
 #include "StartupTrace.h"
 #include "UiControls.h"
 #include "WindowPlacement.h"
+#include "GdiFonts.h"
 
 #include "openreplay/Version.h"
 
@@ -14,13 +15,23 @@
 #include "microsoft.ui.xaml.window.h"
 
 #include <dwmapi.h>
+#include <propkey.h>
 
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cwctype>
+#include <format>
 #include <limits>
 
 namespace {
+
+// A cancelled show can leave DWM drawing the hidden main window as a blank rectangle, so the window stays
+// cloaked while the panel is closed.
+void SetCloaked(HWND window, bool cloaked) {
+    const BOOL value = cloaked;
+    DwmSetWindowAttribute(window, DWMWA_CLOAK, &value, sizeof(value));
+}
 
 using openreplay::ui::AddColumn;
 using openreplay::ui::AddRow;
@@ -32,107 +43,204 @@ using openreplay::ui::ClipTitle;
 using openreplay::ui::ControlFactory;
 using openreplay::ui::DarkTheme;
 using openreplay::ui::ListClips;
-using openreplay::ui::PublicSans;
 using openreplay::ui::Text;
 
-constexpr UINT_PTR kNotificationAnimationTimer = 1;
-constexpr UINT_PTR kNotificationHideTimer = 2;
+constexpr UINT_PTR kNotificationFrameTimer = 1;
+constexpr UINT kNotificationThumbnailMessage = WM_APP + 1;
 constexpr int kBufferSegments = 30;
-constexpr int kNotificationWidth = 360;
 
-enum class NotificationAction { Copy, Webhook, OpenFolder, CopyPath };
-using NotificationActions = std::vector<std::pair<NotificationAction, std::wstring>>;
+// Notification card: sizes in pixels at 96 DPI, times in milliseconds.
+constexpr int kNotificationWidth = 372;
+constexpr int kNotificationMinHeight = 72;
+constexpr int kNotificationMargin = 24;
+constexpr int kNotificationGap = 8;
+constexpr int kThumbnailWidth = 128;
+constexpr int kLiveTimerWidth = 104;
+constexpr std::size_t kMaxNotifications = 3;
+constexpr double kSlideInMs = 300.0;
+constexpr double kSlideOutMs = 220.0;
+constexpr double kReflowMs = 200.0;
+constexpr double kBarDelayMs = 700.0;
+constexpr COLORREF kNotificationBackground = RGB(16, 16, 17);
+constexpr COLORREF kNotificationBorder = RGB(36, 36, 39);
 
-NotificationActions NotificationActionsFor(bool has_output, bool shareable, bool webhook, bool english) {
-    NotificationActions actions;
-    if (has_output && shareable) {
-        actions.emplace_back(NotificationAction::Copy, english ? L"Copy" : L"Скопировать");
-        if (webhook) actions.emplace_back(NotificationAction::Webhook, english ? L"Send webhook" : L"Webhook");
+int Pixels(double value, UINT dpi) {
+    return static_cast<int>(std::lround(value * dpi / 96.0));
+}
+
+// CSS cubic-bezier() timing, so the cards move like their design mockup.
+double CubicBezier(double x1, double y1, double x2, double y2, double progress) {
+    const auto curve = [](double a, double b, double t) {
+        return 3.0 * a * t * (1.0 - t) * (1.0 - t) + 3.0 * b * t * t * (1.0 - t) + t * t * t;
+    };
+    progress = std::clamp(progress, 0.0, 1.0);
+    double low = 0.0;
+    double high = 1.0;
+    for (int step = 0; step < 20; ++step) {
+        const auto middle = (low + high) / 2.0;
+        (curve(x1, x2, middle) < progress ? low : high) = middle;
     }
-    if (has_output) {
-        actions.emplace_back(NotificationAction::OpenFolder, english ? L"Open folder" : L"Открыть папку");
-        actions.emplace_back(NotificationAction::CopyPath, english ? L"Copy path" : L"Копировать путь");
-    }
-    return actions;
+    return curve(y1, y2, (low + high) / 2.0);
+}
+
+double EaseOut(double progress) {
+    return CubicBezier(0.0, 0.0, 0.58, 1.0, progress);
+}
+
+COLORREF Mix(COLORREF from, COLORREF to, double amount) {
+    const auto channel = [amount](BYTE a, BYTE b) {
+        return static_cast<BYTE>(std::lround(a + (b - a) * amount));
+    };
+    return RGB(channel(GetRValue(from), GetRValue(to)), channel(GetGValue(from), GetGValue(to)),
+               channel(GetBValue(from), GetBValue(to)));
 }
 
 struct NotificationFonts {
-    HFONT title{};
-    HFONT body{};
-    HFONT action{};
-
-    explicit NotificationFonts(UINT dpi) {
-        const auto make = [dpi](int size, int weight) {
-            return CreateFontW(-openreplay::ui::ScaleForDpi(size, dpi), 0, 0, 0, weight, FALSE, FALSE, FALSE,
-                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                               DEFAULT_PITCH, L"Public Sans");
-        };
-        title = make(14, FW_SEMIBOLD);
-        body = make(12, FW_NORMAL);
-        action = make(12, FW_SEMIBOLD);
-    }
+    explicit NotificationFonts(UINT monitor_dpi)
+        : dpi{monitor_dpi},
+          tag{Pixels(10.5, monitor_dpi), FW_BOLD},
+          main{Pixels(15, monitor_dpi), FW_SEMIBOLD},
+          meta{Pixels(12, monitor_dpi), FW_MEDIUM},
+          timer{Pixels(19, monitor_dpi), FW_SEMIBOLD},
+          badge{CreateFontW(-Pixels(10, monitor_dpi), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
+                            L"Cascadia Mono")} {}
     ~NotificationFonts() {
-        for (const auto font : {title, body, action}) {
-            if (font) DeleteObject(font);
-        }
+        if (badge) DeleteObject(badge);
     }
     NotificationFonts(const NotificationFonts&) = delete;
     NotificationFonts& operator=(const NotificationFonts&) = delete;
+
+    UINT dpi;
+    openreplay::ui::GdiFont tag;
+    openreplay::ui::GdiFont main;
+    openreplay::ui::GdiFont meta;
+    openreplay::ui::GdiFont timer;
+    HFONT badge;
 };
+
+// The cards share one monitor, so one set of fonts serves them all; it is rebuilt when the monitor's DPI changes.
+const NotificationFonts& NotificationFontsFor(UINT dpi) {
+    static std::unique_ptr<NotificationFonts> fonts;
+    if (!fonts || fonts->dpi != dpi) fonts = std::make_unique<NotificationFonts>(dpi);
+    return *fonts;
+}
 
 struct NotificationLayout {
     int height{};
-    RECT marker{};
-    RECT title{};
-    RECT message{};
-    std::vector<std::pair<NotificationAction, RECT>> actions;
+    RECT tag{};
+    RECT main{};
+    RECT meta{};
+    RECT media{};
 };
 
-// The only source of notification geometry: window size, painting and hit testing all use it.
-NotificationLayout MeasureNotification(HDC dc, UINT dpi, const NotificationFonts& fonts, std::wstring_view message,
-                                       const NotificationActions& actions) {
+// The only source of notification geometry: the stack layout and painting both use it.
+NotificationLayout MeasureNotification(HDC dc, UINT dpi, const NotificationFonts& fonts, std::wstring_view tag,
+                                       std::wstring_view title, std::wstring_view message, int media_width) {
     const auto scale = [dpi](int value) { return openreplay::ui::ScaleForDpi(value, dpi); };
     const auto old_font = SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT));
-    const auto measure = [dc](HFONT font, std::wstring_view text, int width, UINT format) {
-        SelectObject(dc, font ? font : GetStockObject(DEFAULT_GUI_FONT));
-        RECT rect{0, 0, width, 0};
-        DrawTextW(dc, text.data(), static_cast<int>(text.size()), &rect, format | DT_CALCRECT | DT_NOPREFIX);
-        return rect;
+    const auto line_height = [dc](HFONT font) {
+        SelectObject(dc, font);
+        TEXTMETRICW metrics{};
+        GetTextMetricsW(dc, &metrics);
+        return static_cast<int>(metrics.tmHeight);
     };
     NotificationLayout layout;
-    const int left = scale(34);
-    const int right = scale(kNotificationWidth) - scale(16);
-    int y = scale(14);
-    const int title_height = measure(fonts.title, L"Ag", right - left, DT_SINGLELINE).bottom;
-    layout.title = {left, y, right, y + title_height};
-    const int marker_top = y + (title_height - scale(8)) / 2;
-    layout.marker = {scale(16), marker_top, scale(24), marker_top + scale(8)};
-    y = layout.title.bottom;
+    const int width = scale(kNotificationWidth);
+    const int border = std::max(1, scale(1));
+    const int media = media_width ? scale(media_width) : 0;
+    const int left = border + scale(18);
+    const int right = width - border - media - scale(12);
+    const int tag_height = line_height(fonts.tag.For(tag)) + 2 * scale(1);
+    const int main_height = line_height(fonts.main.For(title));
+    int meta_height = 0;
     if (!message.empty()) {
-        y += scale(3);
-        const int line = measure(fonts.body, L"Ag", right - left, DT_SINGLELINE).bottom;
-        const int height = measure(fonts.body, message, right - left, DT_WORDBREAK | DT_EDITCONTROL).bottom;
-        layout.message = {left, y, right, y + std::min(height, line * 3)};
-        y = layout.message.bottom;
+        const int line = line_height(fonts.meta.For(message));
+        RECT bounds{0, 0, right - left, 0};
+        DrawTextW(dc, message.data(), static_cast<int>(message.size()), &bounds,
+                  DT_CALCRECT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX);
+        // A long error keeps a second line rather than losing its point to an ellipsis.
+        meta_height = std::min(static_cast<int>(bounds.bottom), 2 * line);
     }
-    if (!actions.empty()) {
-        y += scale(10);
-        const int row_height = measure(fonts.action, L"Ag", right - left, DT_SINGLELINE).bottom;
-        int x = left;
-        for (const auto& [action, label] : actions) {
-            const int width = measure(fonts.action, label, right - left, DT_SINGLELINE).right;
-            if (x > left && x + width > right) {
-                x = left;
-                y += row_height + scale(6);
-            }
-            layout.actions.emplace_back(action, RECT{x, y, x + width, y + row_height});
-            x += width + scale(16);
-        }
-        y += row_height;
+    const int gap = scale(3);
+    const int content = tag_height + gap + main_height + (meta_height ? gap + meta_height : 0);
+    layout.height = std::max(scale(kNotificationMinHeight), content + scale(16));
+    int y = (layout.height - content) / 2;
+    layout.tag = {left, y + scale(1), right, y + tag_height - scale(1)};
+    y += tag_height + gap;
+    layout.main = {left, y, right, y + main_height};
+    if (meta_height) {
+        y += main_height + gap;
+        layout.meta = {left, y, right, y + meta_height};
     }
-    layout.height = y + scale(14);
+    if (media) layout.media = {width - border - media, border, width - border, layout.height - border};
     SelectObject(dc, old_font);
     return layout;
+}
+
+// A fresh video's shell thumbnail can take a moment, so it loads off the UI thread and arrives as a message.
+winrt::fire_and_forget LoadNotificationThumbnail(HWND window, std::filesystem::path path, WPARAM request) {
+    co_await winrt::resume_background();
+    path.make_preferred();
+    HBITMAP bitmap = nullptr;
+    if (SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED))) {
+        {
+            winrt::com_ptr<IShellItemImageFactory> factory;
+            if (SUCCEEDED(SHCreateItemFromParsingName(path.c_str(), nullptr, IID_PPV_ARGS(factory.put())))) {
+                for (int attempt = 0; attempt < 10 && !bitmap; ++attempt) {
+                    if (attempt) Sleep(200);
+                    factory->GetImage(SIZE{320, 320}, SIIGBF_THUMBNAILONLY, &bitmap);
+                }
+            }
+        }
+        CoUninitialize();
+    }
+    if (bitmap && !PostMessageW(window, kNotificationThumbnailMessage, request, reinterpret_cast<LPARAM>(bitmap))) {
+        DeleteObject(bitmap);
+    }
+}
+
+// From the file's metadata, so a replay cut short by a fresh buffer shows its real length. The shell does not parse
+// forward slashes, which OBS uses in the paths it reports.
+std::optional<std::uint64_t> MediaSeconds(std::filesystem::path path) {
+    winrt::com_ptr<IShellItem2> item;
+    ULONGLONG duration = 0;  // 100 ns units
+    if (FAILED(SHCreateItemFromParsingName(path.make_preferred().c_str(), nullptr, IID_PPV_ARGS(item.put()))) ||
+        FAILED(item->GetUInt64(PKEY_Media_Duration, &duration)) || !duration) {
+        return std::nullopt;
+    }
+    return (duration + 5'000'000ULL) / 10'000'000ULL;
+}
+
+// "3440×1440" from a PNG header, without decoding the image.
+std::wstring ImageSizeText(const std::filesystem::path& path) {
+    std::ifstream file{path, std::ios::binary};
+    std::array<unsigned char, 24> header{};
+    if (!file.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size())) ||
+        std::memcmp(header.data() + 1, "PNG", 3) != 0) {
+        return {};
+    }
+    const auto number = [&header](std::size_t offset) {
+        return std::to_wstring(std::uint32_t{header[offset]} << 24 | std::uint32_t{header[offset + 1]} << 16 |
+                               std::uint32_t{header[offset + 2]} << 8 | std::uint32_t{header[offset + 3]});
+    };
+    return number(16) + L"×" + number(20);
+}
+
+// "Saved 15 seconds". In Russian the verb and the noun agree with the number.
+std::wstring SavedLengthText(std::uint64_t seconds, bool english) {
+    if (seconds >= 60) {
+        auto length = std::to_wstring(seconds / 60) + (english ? L" min" : L" мин");
+        if (seconds % 60) length += L" " + std::to_wstring(seconds % 60) + (english ? L" sec" : L" сек");
+        return (english ? L"Saved " : L"Сохранено ") + length;
+    }
+    const auto count = std::to_wstring(seconds);
+    if (english) return L"Saved " + count + (seconds == 1 ? L" second" : L" seconds");
+    const auto last = seconds % 10;
+    const bool teen = seconds % 100 / 10 == 1;
+    if (!teen && last == 1) return L"Сохранена " + count + L" секунда";
+    if (!teen && last >= 2 && last <= 4) return L"Сохранено " + count + L" секунды";
+    return L"Сохранено " + count + L" секунд";
 }
 constexpr std::size_t kRecentClipCount = 3;
 
@@ -406,15 +514,7 @@ MainWindow::~MainWindow() {
         if (notification->window) DestroyWindow(notification->window);
     }
     notifications_.clear();
-    if (private_font_loaded_) {
-        std::array<wchar_t, 32768> executable{};
-        const auto length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
-        if (length && length < executable.size()) {
-            const auto font = std::filesystem::path{std::wstring{executable.data(), length}}.parent_path() /
-                              L"Assets" / L"PublicSans-Variable.ttf";
-            RemoveFontResourceExW(font.c_str(), FR_PRIVATE, nullptr);
-        }
-    }
+    openreplay::ui::UnloadGdiFonts();
 }
 
 void MainWindow::ConfigureUpdateLaunch(std::wstring version, std::filesystem::path health_file) {
@@ -466,7 +566,7 @@ void MainWindow::BuildUi() {
     const auto faint_brush = theme.faint;
     const auto line_brush = theme.border;
     const auto transparent_brush = Brush(0x00000000);
-    const auto semibold = Windows::UI::Text::FontWeights::SemiBold();
+    const auto bold = Windows::UI::Text::FontWeights::Bold();
 
     const auto make_row = [&](UIElement const& child, Thickness padding = Thickness{24, 13, 24, 13}) {
         Border row;
@@ -510,7 +610,7 @@ void MainWindow::BuildUi() {
     brand_mark.VerticalAlignment(VerticalAlignment::Center);
     brand.Children().Append(brand_mark);
     auto brand_text = Text(L"OpenReplay", 14, primary_text_brush);
-    brand_text.FontWeight(semibold);
+    brand_text.FontWeight(bold);
     brand.Children().Append(brand_text);
     header.Children().Append(brand);
 
@@ -519,7 +619,8 @@ void MainWindow::BuildUi() {
     nav.VerticalAlignment(VerticalAlignment::Center);
     const auto nav_tab = [&] {
         Button tab;
-        tab.FontFamily(openreplay::ui::PublicSans());
+        tab.FontFamily(openreplay::ui::AppFont());
+        tab.FontWeight(Windows::UI::Text::FontWeights::Medium());
         tab.FontSize(13);
         tab.Foreground(muted_brush);
         tab.Background(transparent_brush);
@@ -560,10 +661,10 @@ void MainWindow::BuildUi() {
     buffer_heading.Spacing(10);
     buffer_heading.Margin(Thickness{24, 26, 24, 0});
     buffer_value_text_ = Text(L"", 44, primary_text_brush);
-    buffer_value_text_.FontWeight(Windows::UI::Text::FontWeights::Light());
+    buffer_value_text_.FontWeight(Windows::UI::Text::FontWeights::Medium());
     buffer_value_text_.CharacterSpacing(-20);
     buffer_filled_run_ = Documents::Run{};
-    buffer_filled_run_.FontWeight(semibold);
+    buffer_filled_run_.FontWeight(bold);
     buffer_filled_run_.Text(L"0");
     buffer_total_run_ = Documents::Run{};
     buffer_value_text_.Inlines().Append(buffer_filled_run_);
@@ -633,7 +734,7 @@ void MainWindow::BuildUi() {
     AddColumn(save_content, 1, GridUnitType::Star);
     AddColumn(save_content, 0, GridUnitType::Auto);
     save_replay_text_ = Text(L"Сохранить повтор", 15, theme.accent_text);
-    save_replay_text_.FontWeight(semibold);
+    save_replay_text_.FontWeight(bold);
     save_replay_text_.VerticalAlignment(VerticalAlignment::Center);
     save_content.Children().Append(save_replay_text_);
     save_replay_keys_ = StackPanel{};
@@ -662,7 +763,7 @@ void MainWindow::BuildUi() {
         content.Children().Append(icon);
         StackPanel copy;
         copy.VerticalAlignment(VerticalAlignment::Center);
-        title.FontWeight(Windows::UI::Text::FontWeights::Medium());
+        title.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
         copy.Children().Append(title);
         subtitle.Margin(Thickness{0, 3, 0, 0});
         subtitle.TextTrimming(TextTrimming::CharacterEllipsis);
@@ -721,7 +822,8 @@ void MainWindow::BuildUi() {
     recent_all_button_.Background(transparent_brush);
     recent_all_button_.BorderThickness(Thickness{0, 0, 0, 0});
     recent_all_button_.Padding(Thickness{10, 4, 10, 4});
-    recent_all_button_.FontFamily(openreplay::ui::PublicSans());
+    recent_all_button_.FontFamily(openreplay::ui::AppFont());
+    recent_all_button_.FontWeight(Windows::UI::Text::FontWeights::Medium());
     recent_all_button_.FontSize(12);
     recent_all_button_.Foreground(muted_brush);
     recent_all_button_.Click({this, &MainWindow::GalleryButton_Click});
@@ -748,7 +850,7 @@ void MainWindow::BuildUi() {
     AddColumn(settings_header, 1, GridUnitType::Star);
     AddColumn(settings_header, 0, GridUnitType::Auto);
     settings_title_ = Text(L"Настройки", 30, primary_text_brush);
-    settings_title_.FontWeight(semibold);
+    settings_title_.FontWeight(bold);
     settings_header.Children().Append(settings_title_);
     StackPanel save_status;
     save_status.Orientation(Orientation::Horizontal);
@@ -852,7 +954,7 @@ void MainWindow::BuildUi() {
         label = Text(text, 14, primary_text_brush);
         top.Children().Append(label);
         value = Text(initial, 13.5, success_brush_);
-        value.FontWeight(Windows::UI::Text::FontWeights::Medium());
+        value.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
         Grid::SetColumn(value, 1);
         top.Children().Append(value);
         block.Children().Append(top);
@@ -964,7 +1066,7 @@ void MainWindow::BuildUi() {
     AddColumn(estimate_content, 0, GridUnitType::Auto);
     AddColumn(estimate_content, 1, GridUnitType::Star);
     replay_size_value_ = Text(L"≈ 181 МБ", 22, primary_text_brush);
-    replay_size_value_.FontWeight(semibold);
+    replay_size_value_.FontWeight(bold);
     replay_size_value_.VerticalAlignment(VerticalAlignment::Center);
     estimate_content.Children().Append(replay_size_value_);
     StackPanel estimate_copy;
@@ -1259,26 +1361,43 @@ void MainWindow::BuildUi() {
     update_status_text_.Margin(Thickness{0, 3, 0, 0});
     update_copy.Children().Append(update_status_text_);
     update_row.Children().Append(update_copy);
-    StackPanel update_actions;
-    update_actions.Spacing(6);
-    update_actions.VerticalAlignment(VerticalAlignment::Center);
     check_update_button_ = controls.ActionButton(L"Check now");
-    check_update_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
+    check_update_button_.VerticalAlignment(VerticalAlignment::Center);
     check_update_button_.Click({this, &MainWindow::CheckUpdate_Click});
-    update_actions.Children().Append(check_update_button_);
-    update_action_button_ = controls.ActionButton(L"Download update", ButtonKind::Accent);
-    update_action_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
-    update_action_button_.Visibility(Visibility::Collapsed);
+    Grid::SetColumn(check_update_button_, 1);
+    update_row.Children().Append(check_update_button_);
+    updates_section.Children().Append(group_row(update_row, Thickness{16, 12, 16, 12}));
+
+    // A found update gets its own card, so its actions sit side by side instead of stacking beside the status.
+    update_card_ = Border{};
+    update_card_.Background(theme.inset);
+    update_card_.BorderBrush(theme.border);
+    update_card_.BorderThickness(Thickness{1, 1, 1, 1});
+    update_card_.CornerRadius(CornerRadius{10, 10, 10, 10});
+    update_card_.Padding(Thickness{16, 12, 16, 14});
+    update_card_.Margin(Thickness{16, 0, 16, 12});
+    update_card_.Visibility(Visibility::Collapsed);
+    StackPanel update_card_content;
+    update_card_title_ = Text(L"", 13.5, primary_text_brush);
+    update_card_title_.FontWeight(Windows::UI::Text::FontWeights::Bold());
+    update_card_content.Children().Append(update_card_title_);
+    update_card_detail_ = Text(L"", 12, muted_brush);
+    update_card_detail_.TextWrapping(TextWrapping::Wrap);
+    update_card_detail_.Margin(Thickness{0, 3, 0, 0});
+    update_card_content.Children().Append(update_card_detail_);
+    StackPanel update_actions;
+    update_actions.Orientation(Orientation::Horizontal);
+    update_actions.Spacing(8);
+    update_actions.Margin(Thickness{0, 12, 0, 0});
+    update_action_button_ = controls.ActionButton(L"Download", ButtonKind::Accent);
     update_action_button_.Click({this, &MainWindow::UpdateAction_Click});
     update_actions.Children().Append(update_action_button_);
     release_notes_button_ = controls.ActionButton(L"Release notes");
-    release_notes_button_.HorizontalAlignment(HorizontalAlignment::Stretch);
-    release_notes_button_.Visibility(Visibility::Collapsed);
     release_notes_button_.Click({this, &MainWindow::OpenReleaseNotes_Click});
     update_actions.Children().Append(release_notes_button_);
-    Grid::SetColumn(update_actions, 1);
-    update_row.Children().Append(update_actions);
-    updates_section.Children().Append(group_row(update_row, Thickness{16, 12, 16, 12}));
+    update_card_content.Children().Append(update_actions);
+    update_card_.Child(update_card_content);
+    updates_section.Children().Append(update_card_);
 
     settings_scroll.Content(form);
     settings_panel_.Children().Append(settings_scroll);
@@ -1317,9 +1436,11 @@ void MainWindow::InitializeWindow() {
     hotkey_registered_ = RegisterHotKey(window, kOverlayHotkey, MOD_ALT | MOD_NOREPEAT, 'Z') != FALSE;
     performance_hotkey_registered_ =
         RegisterHotKey(window, kPerformanceOverlayHotkey, MOD_ALT | MOD_NOREPEAT, 'R') != FALSE;
+    openreplay::ui::LoadGdiFonts();
     performance_overlay_.Initialize(window);
     AddTrayIcon();
     InitializeNotificationWindow();
+    SetCloaked(window, true);
     ShowWindow(window, SW_HIDE);
     Microsoft::UI::Xaml::Window xaml_window = *this;
     xaml_window.AppWindow().Hide();
@@ -1682,10 +1803,7 @@ bool MainWindow::ValidateHotkeys(bool check_system_conflicts, bool show_notifica
 
 void MainWindow::RequestReplaySave(std::uint32_t replay_seconds) {
     replay_save_pending_ = true;
-    DWORD process_id = 0;
-    const auto foreground = GetForegroundWindow();
-    GetWindowThreadProcessId(foreground, &process_id);
-    replay_game_ = GameNameOf(process_id == GetCurrentProcessId() ? last_external_window_ : foreground);
+    replay_game_ = ForegroundGameName();
     const auto duration = std::to_wstring(replay_seconds);
     ShowToast(english_ ? L"Saving replay" : L"Сохраняем повтор",
               english_ ? L"Finalizing the last " + duration + L" seconds..."
@@ -1770,6 +1888,8 @@ void MainWindow::ShowOnLaunch() {
     const bool desktop = openreplay::ui::ForegroundMonitorArea(window_handle).desktop;
     if (visible_ || !PositionOverlayWindow()) return;
     visible_ = true;
+    SetCloaked(window_handle, false);
+    RefreshRecentClips();
     Microsoft::UI::Xaml::Window window = *this;
     if (desktop) {
         window.AppWindow().Show(false);
@@ -1789,6 +1909,7 @@ void MainWindow::ShowOverlay() {
     const bool desktop = openreplay::ui::ForegroundMonitorArea(window).desktop;
     if (!PositionOverlayWindow()) return;
     visible_ = true;
+    SetCloaked(window, false);
     RefreshRecentClips();
     if (desktop) {
         Microsoft::UI::Xaml::Window xaml_window = *this;
@@ -1832,6 +1953,7 @@ void MainWindow::SetClipFullscreen(bool fullscreen) {
     }
     if (clip_fullscreen_hid_overlay_ && !visible_ && PositionOverlayWindow()) {
         visible_ = true;
+        SetCloaked(GetWindowHandle(), false);
         ShowWindow(GetWindowHandle(), SW_SHOWNOACTIVATE);
         PollStatus();
     }
@@ -1975,7 +2097,7 @@ void MainWindow::RefreshRecentClips() {
         StackPanel copy;
         copy.VerticalAlignment(VerticalAlignment::Center);
         auto title = Text(ClipTitle(entry.path(), english_), 13.5, theme.primary_text);
-        title.FontWeight(Windows::UI::Text::FontWeights::Medium());
+        title.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
         copy.Children().Append(title);
         std::error_code size_error;
         const auto size = entry.file_size(size_error);
@@ -2636,53 +2758,39 @@ void MainWindow::PollStatus() {
 }
 
 void MainWindow::UpdateUpdateUi() {
-    if (!update_version_text_ || !update_status_text_ || !update_action_button_) return;
+    if (!update_version_text_ || !update_status_text_ || !update_card_) return;
     update_version_text_.Text(L"OpenReplay " + openreplay::FromUtf8(openreplay::kVersion) +
                                (openreplay::kReleaseChannel == "dev"
                                     ? (english_ ? L" · Dev" : L" · Dev-канал")
                                     : (english_ ? L" · Stable" : L" · Стабильный канал")));
-    check_update_button_.IsEnabled(!update_check_in_flight_ && !update_download_in_flight_);
-    developer_updates_toggle_.IsEnabled(!update_check_in_flight_ && !update_download_in_flight_);
-    if (update_download_in_flight_) {
-        update_status_text_.Text(english_ ? L"Downloading and verifying update..."
-                                          : L"Загрузка и проверка обновления...");
-        update_action_button_.Visibility(Visibility::Collapsed);
-        release_notes_button_.Visibility(Visibility::Visible);
+    const bool busy = update_check_in_flight_ || update_download_in_flight_;
+    check_update_button_.IsEnabled(!busy);
+    developer_updates_toggle_.IsEnabled(!busy);
+    update_status_text_.Text(update_check_in_flight_
+        ? (english_ ? L"Checking signed release metadata..." : L"Проверка подписанных данных релиза...")
+        : developer_updates_toggle_.IsOn()
+            ? (english_ ? L"Stable and developer updates are checked in the background."
+                        : L"Стабильные и dev-обновления проверяются в фоне.")
+            : (english_ ? L"Stable updates are checked in the background."
+                        : L"Стабильные обновления проверяются в фоне."));
+
+    if (available_update_.version.empty()) {
+        update_card_.Visibility(Visibility::Collapsed);
         return;
     }
-    if (update_check_in_flight_) {
-        update_status_text_.Text(english_ ? L"Checking signed release metadata..."
-                                          : L"Проверка подписанных данных релиза...");
-        update_action_button_.Visibility(Visibility::Collapsed);
-        return;
-    }
-    if (!downloaded_update_.empty()) {
-        update_status_text_.Text(english_ ? L"Update " + openreplay::FromUtf8(available_update_.version) +
-                                               L" is ready. Restart when capture is idle."
-                                          : L"Обновление " + openreplay::FromUtf8(available_update_.version) +
-                                               L" готово. Перезапустите после завершения захвата.");
-        update_action_button_.Content(winrt::box_value(english_ ? L"Restart to update" : L"Перезапустить"));
-        update_action_button_.Visibility(Visibility::Visible);
-        release_notes_button_.Visibility(Visibility::Visible);
-        return;
-    }
-    if (!available_update_.version.empty()) {
-        update_status_text_.Text(english_ ? L"Version " + openreplay::FromUtf8(available_update_.version) +
-                                               L" is available."
-                                          : L"Доступна версия " + openreplay::FromUtf8(available_update_.version) + L".");
-        update_action_button_.Content(winrt::box_value(english_ ? L"Download update" : L"Скачать"));
-        update_action_button_.Visibility(Visibility::Visible);
-        release_notes_button_.Visibility(Visibility::Visible);
-        return;
-    }
-    const auto developer_channel = developer_updates_toggle_.IsOn();
-    update_status_text_.Text(developer_channel
-        ? (english_ ? L"Stable and developer updates are checked in the background."
-                    : L"Стабильные и dev-обновления проверяются в фоне.")
-        : (english_ ? L"Stable updates are checked in the background."
-                    : L"Стабильные обновления проверяются в фоне."));
-    update_action_button_.Visibility(Visibility::Collapsed);
-    release_notes_button_.Visibility(Visibility::Collapsed);
+    const auto version = openreplay::FromUtf8(available_update_.version);
+    const bool ready = !downloaded_update_.empty();
+    update_card_title_.Text(ready ? (english_ ? L"Update " + version + L" is ready" : L"Обновление " + version + L" готово")
+                                  : (english_ ? L"Version " + version + L" is available" : L"Доступна версия " + version));
+    update_card_detail_.Text(update_download_in_flight_
+        ? (english_ ? L"Downloading and verifying the update..." : L"Загрузка и проверка обновления...")
+        : ready ? (english_ ? L"Restart OpenReplay when capture is idle." : L"Перезапустите OpenReplay, когда захват не идёт.")
+                : (english_ ? L"It downloads in the background and is verified before install."
+                            : L"Скачивается в фоне и проверяется перед установкой."));
+    update_action_button_.Content(winrt::box_value(ready ? (english_ ? L"Restart to update" : L"Перезапустить")
+                                                         : (english_ ? L"Download" : L"Скачать")));
+    update_action_button_.Visibility(busy ? Visibility::Collapsed : Visibility::Visible);
+    update_card_.Visibility(Visibility::Visible);
 }
 
 winrt::fire_and_forget MainWindow::CheckForUpdatesAsync(bool manual, bool automatic_download) {
@@ -2909,7 +3017,10 @@ void MainWindow::ApplyResponse(const openreplay::Response& response) {
                                                           : secondary_text_brush_);
 
     recording_ = FieldIsTrue(response, "recording");
-    const bool audio_signal = FieldIsTrue(response, "audio_signal");
+    // Pauses in speech read as silence, so the warning waits until there has been no sound for a while.
+    const auto now = std::chrono::steady_clock::now();
+    if (FieldIsTrue(response, "audio_signal")) last_audio_signal_ = now;
+    const bool audio_signal = now - last_audio_signal_ < std::chrono::seconds{10};
     const bool capture_ready = pipeline_error.empty() && (state == "running" || state == "disabled");
     long long recording_seconds = 0;
     try { recording_seconds = std::stoll(Field(response, "recording_seconds")); } catch (...) {}
@@ -2983,10 +3094,12 @@ void MainWindow::UpdateStorageSpace() {
     UpdateDashboardMeta();
     if (low && !low_space_warning_shown_) {
         low_space_warning_shown_ = true;
-        ShowToast(english_ ? L"Low disk space" : L"Мало места на диске",
-                  english_ ? L"Less than 5 GB remains in the recording folder"
-                           : L"В папке записей осталось меньше 5 ГБ",
-                  true, false, true);
+        const auto left = ByteSize(available.QuadPart, english_);
+        const auto drive = std::filesystem::path{settings_.output_directory}.root_name().wstring();
+        ShowToast(drive.empty() ? (english_ ? left + L" left" : L"Осталось " + left)
+                                : (english_ ? left + L" left on " + drive : L"На " + drive + L" осталось " + left),
+                  english_ ? L"Replays will stop saving soon" : L"Скоро повторы перестанут сохраняться",
+                  true, false, true, {}, NotificationChannel::Disk);
     } else if (!low) {
         low_space_warning_shown_ = false;
     }
@@ -3092,10 +3205,15 @@ void MainWindow::ApplyReplaySaveStatus(const openreplay::Response& response) {
             if (!rename_error) path = renamed;
         }
     }
-    const auto filename = path.filename().wstring();
-    ShowToast(english_ ? L"Replay saved" : L"Повтор сохранён",
-              filename.empty() ? path.wstring() : filename, false, false, true, path,
-              NotificationChannel::ReplaySave, true);
+    ShowWhenMediaReadyAsync(path, [this, path, game](std::optional<std::uint64_t> seconds) {
+        std::error_code size_error;
+        const auto size = std::filesystem::file_size(path, size_error);
+        ShowToast(seconds ? SavedLengthText(*seconds, english_) : (english_ ? L"Replay saved" : L"Повтор сохранён"),
+                  openreplay::ui::JoinDetails({game, size_error ? L"" : ByteSize(size, english_),
+                                               hotkey_registered_ ? (english_ ? L"Alt+Z to open" : L"Alt+Z — открыть")
+                                                                  : L""}),
+                  false, false, true, path, NotificationChannel::ReplaySave);
+    });
     openreplay::ui::TraceStartup(L"Replay saved: " + path.wstring());
     RefreshRecentClips();
     if (settings_.discord_auto_send && discord_webhook_configured_) ShareReplay(path, true);
@@ -3201,11 +3319,12 @@ void MainWindow::CompleteReplayShare(std::filesystem::path output, bool webhook,
         std::error_code size_error;
         const auto size = std::filesystem::file_size(output, size_error);
         const bool compressed = output.parent_path().filename() == L"Discord" && !size_error;
-        ShowToast(compressed ? (english_ ? L"Compressed to " : L"Сжато до ") + ByteSize(size, english_) +
-                                   (english_ ? L" and copied" : L" и скопировано")
-                             : (english_ ? L"Copied" : L"Скопировано"),
-                  english_ ? L"Paste into Discord with Ctrl+V" : L"Вставьте в Discord — Ctrl+V",
-                  false, false, true, {}, NotificationChannel::DiscordShare);
+        ShowToast(english_ ? L"Clip copied" : L"Клип в буфере обмена",
+                  openreplay::ui::JoinDetails(
+                      {english_ ? L"Paste it into chat" : L"Вставьте в чат",
+                       size_error ? L"" : (compressed ? (english_ ? L"compressed to " : L"сжат до ") : L"") +
+                                              ByteSize(size, english_)}),
+                  false, false, true, output, NotificationChannel::DiscordShare);
     }
     if (result.ok && clip_library_window_owner_) clip_library_window_owner_->ShowSharedCopy(output);
     if (discord_webhook_configured_ && !pending_discord_uploads_.empty()) {
@@ -3371,9 +3490,8 @@ void MainWindow::ShowNotification(std::wstring_view message, bool error) {
 }
 
 void MainWindow::ShowToast(std::wstring_view title, std::wstring_view message, bool error, bool progress,
-                            bool auto_hide, const std::filesystem::path& output, NotificationChannel channel,
-                            bool shareable) {
-    ShowDesktopNotification(title, message, error, progress, auto_hide, output, channel, shareable);
+                            bool auto_hide, const std::filesystem::path& output, NotificationChannel channel) {
+    ShowDesktopNotification(title, message, error, progress, auto_hide, output, channel);
 }
 
 void MainWindow::InitializeNotificationWindow() {
@@ -3386,75 +3504,89 @@ void MainWindow::InitializeNotificationWindow() {
     window_class.lpszClassName = L"OpenReplay.Notification";
     if (!RegisterClassExW(&window_class) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return;
     notification_class_registered_ = true;
-    std::array<wchar_t, 32768> executable{};
-    const auto length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
-    if (length && length < executable.size()) {
-        const auto font = std::filesystem::path{std::wstring{executable.data(), length}}.parent_path() /
-                          L"Assets" / L"PublicSans-Variable.ttf";
-        private_font_loaded_ = AddFontResourceExW(font.c_str(), FR_PRIVATE, nullptr) != 0;
-    }
 }
 
 void MainWindow::ShowDesktopNotification(std::wstring_view title, std::wstring_view message, bool error,
                                            bool progress, bool auto_hide, const std::filesystem::path& output,
-                                           NotificationChannel channel, bool shareable) {
+                                           NotificationChannel channel) {
     InitializeNotificationWindow();
     if (!notification_class_registered_) return;
 
     DesktopNotification* notification = nullptr;
     if (channel != NotificationChannel::General) {
         const auto existing = std::ranges::find_if(notifications_, [channel](const auto& item) {
-            return item->channel == channel && item->progress && !item->hiding;
+            return item->channel == channel && !item->hiding;
         });
         if (existing != notifications_.end()) notification = existing->get();
     }
 
+    const auto now = std::chrono::steady_clock::now();
     if (!notification) {
         auto item = std::make_unique<DesktopNotification>();
         item->owner = this;
         item->channel = channel;
+        // Layered and transparent to the mouse, so it never takes focus or clicks from the game.
         item->window = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"OpenReplay.Notification", L"OpenReplay",
-            WS_POPUP, 0, 0, kNotificationWidth, 80, nullptr, nullptr, GetModuleHandleW(nullptr), item.get());
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            L"OpenReplay.Notification", L"OpenReplay", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr,
+            GetModuleHandleW(nullptr), item.get());
         if (!item->window) return;
-        // Windows 11 draws smooth corners and the border; older systems fall back to a window region.
-        constexpr DWORD kCornerAttribute = 33;  // DWMWA_WINDOW_CORNER_PREFERENCE
-        constexpr DWORD kBorderAttribute = 34;  // DWMWA_BORDER_COLOR
-        constexpr DWORD round_corners = 2;      // DWMWCP_ROUND
-        item->rounded_by_dwm = SUCCEEDED(DwmSetWindowAttribute(item->window, kCornerAttribute, &round_corners,
-                                                               sizeof(round_corners)));
-        if (item->rounded_by_dwm) {
-            constexpr COLORREF border = RGB(46, 46, 51);
-            DwmSetWindowAttribute(item->window, kBorderAttribute, &border, sizeof(border));
-        }
+        item->entered = now;
+        SetTimer(item->window, kNotificationFrameTimer, 15, nullptr);
         notification = item.get();
         notifications_.insert(notifications_.begin(), std::move(item));
     }
 
-    KillTimer(notification->window, kNotificationAnimationTimer);
-    KillTimer(notification->window, kNotificationHideTimer);
-    if (notification->animating) {
-        notification->animating = false;
-        notification->entering = !IsWindowVisible(notification->window);
+    auto& item = *notification;
+    constexpr COLORREF green = RGB(118, 185, 0);
+    constexpr COLORREF red = RGB(255, 77, 82);
+    if (channel == NotificationChannel::Disk) {
+        item.tag = english_ ? L"DISK" : L"ДИСК";
+        item.accent = RGB(242, 178, 51);
+    } else if (error) {
+        item.tag = english_ ? L"ERROR" : L"ОШИБКА";
+        item.accent = red;
+    } else if (channel == NotificationChannel::ReplaySave) {
+        item.tag = english_ ? L"REPLAY" : L"ПОВТОР";
+        item.accent = green;
+    } else if (channel == NotificationChannel::Recording) {
+        item.tag = english_ ? L"RECORDING" : L"ЗАПИСЬ";
+        item.accent = output.empty() ? red : green;
+    } else if (channel == NotificationChannel::Screenshot) {
+        item.tag = english_ ? L"SCREENSHOT" : L"СНИМОК";
+        item.accent = green;
+    } else if (channel == NotificationChannel::DiscordShare) {
+        item.tag = L"DISCORD";
+        item.accent = RGB(140, 146, 255);
+    } else if (channel == NotificationChannel::Update) {
+        item.tag = english_ ? L"UPDATE" : L"ОБНОВЛЕНИЕ";
+        item.accent = RGB(180, 180, 187);
+    } else {
+        item.tag = L"OPENREPLAY";
+        item.accent = green;
     }
-    notification->title = title;
-    notification->message = message;
-    notification->output = output;
-    notification->error = error;
-    notification->progress = progress;
-    notification->shareable = shareable;
-    notification->display_ms = auto_hide
-        ? (error ? 6500U : (progress ? 10000U : (shareable ? 12000U : 4500U))) : 0U;
-    notification->hiding = false;
-    notification->hide_timer_started = false;
-    notification->width = 0;
-    notification->height = 0;
-    InvalidateRect(notification->window, nullptr, TRUE);
+    item.title = title;
+    item.message = message;
+    // A recording without a file yet is still running: its card shows a running timer instead of a thumbnail.
+    item.live = channel == NotificationChannel::Recording && output.empty() && !error;
+    item.life_ms = auto_hide && !progress ? (error ? 8000U : 4000U) : 0U;
+    item.shown = now;
+    if (item.output != output || output.empty()) {
+        item.output = output;
+        if (item.thumbnail) DeleteObject(std::exchange(item.thumbnail, nullptr));
+        item.badge.clear();
+        std::error_code file_error;
+        const bool file = std::filesystem::is_regular_file(output, file_error);
+        if (file) {
+            if (const auto seconds = MediaSeconds(output)) {
+                item.badge = openreplay::ui::DurationText(std::chrono::seconds{*seconds});
+            }
+            LoadNotificationThumbnail(item.window, output, ++item.thumbnail_request);
+        }
+        item.media_width = item.live ? kLiveTimerWidth : file ? kThumbnailWidth : 0;
+    }
     LayoutNotifications();
-    UpdateWindow(notification->window);
-    if (!notification->animating && notification->display_ms) {
-        SetTimer(notification->window, kNotificationHideTimer, notification->display_ms, nullptr);
-    }
+    RenderNotification(item);
 }
 
 void MainWindow::LayoutNotifications() {
@@ -3462,94 +3594,319 @@ void MainWindow::LayoutNotifications() {
     const auto area = openreplay::ui::ForegroundMonitorArea(GetWindowHandle());
     if (!area.monitor) return;
     const auto dpi = openreplay::ui::MonitorDpi(area.monitor);
-    const auto margin = openreplay::ui::ScaleForDpi(18, dpi);
-    const auto gap = openreplay::ui::ScaleForDpi(10, dpi);
-    auto y = area.bounds.top + openreplay::ui::ScaleForDpi(24, dpi);
+    const auto scale = [dpi](int value) { return openreplay::ui::ScaleForDpi(value, dpi); };
+    const auto margin = scale(kNotificationMargin);
+    const auto gap = scale(kNotificationGap);
+    auto y = area.bounds.top + margin;
     auto available_bottom = area.bounds.bottom - margin;
     if (const auto performance_bounds = performance_overlay_.Bounds(); performance_bounds &&
         MonitorFromRect(&*performance_bounds, MONITOR_DEFAULTTONULL) == area.monitor) {
-        if (performance_bounds->top <= y + openreplay::ui::ScaleForDpi(12, dpi)) {
-            y = performance_bounds->bottom + openreplay::ui::ScaleForDpi(12, dpi);
+        if (performance_bounds->top <= y + scale(12)) {
+            y = performance_bounds->bottom + scale(12);
         } else {
             available_bottom = std::min(available_bottom, performance_bounds->top - gap);
         }
     }
 
+    const auto& fonts = NotificationFontsFor(dpi);
+    const auto dc = CreateCompatibleDC(nullptr);
+    const auto now = std::chrono::steady_clock::now();
+    std::size_t stacked = 0;
     std::vector<DesktopNotification*> overflow;
     for (const auto& item : notifications_) {
         auto& notification = *item;
         if (!notification.window || notification.hiding) continue;
-        const auto width = openreplay::ui::ScaleForDpi(kNotificationWidth, dpi);
-        auto height = openreplay::ui::ScaleForDpi(80, dpi);
-        if (const auto dc = GetDC(notification.window)) {
-            const NotificationFonts fonts{dpi};
-            height = MeasureNotification(dc, dpi, fonts, notification.message,
-                                         NotificationActionsFor(!notification.output.empty(), notification.shareable,
-                                                                discord_webhook_configured_, english_)).height;
-            ReleaseDC(notification.window, dc);
-        }
-        if (notification.dpi != dpi || notification.height != height) {
-            InvalidateRect(notification.window, nullptr, FALSE);
-        }
         notification.dpi = dpi;
-        notification.width = width;
-        notification.height = height;
-        notification.hidden_x = area.bounds.right + openreplay::ui::ScaleForDpi(8, dpi);
-        if (y + height > available_bottom) {
+        notification.width = scale(kNotificationWidth);
+        notification.height = dc ? MeasureNotification(dc, dpi, fonts, notification.tag, notification.title,
+                                                       notification.message, notification.media_width).height
+                                 : scale(kNotificationMinHeight);
+        if (stacked == kMaxNotifications || y + notification.height > available_bottom) {
             overflow.push_back(&notification);
             continue;
         }
-        if (!notification.rounded_by_dwm) {
-            if (const auto region = CreateRoundRectRgn(0, 0, width + 1, height + 1,
-                                                       openreplay::ui::ScaleForDpi(20, dpi),
-                                                       openreplay::ui::ScaleForDpi(20, dpi))) {
-                if (!SetWindowRgn(notification.window, region, TRUE)) DeleteObject(region);
-            }
+        ++stacked;
+        notification.x = area.bounds.right - margin - notification.width;
+        notification.edge = area.bounds.right;
+        if (!notification.placed) {
+            notification.placed = true;
+            notification.from_y = y;
+            notification.to_y = y;
+        } else if (notification.to_y != y) {
+            notification.from_y = NotificationY(notification, now);
+            notification.to_y = y;
+            notification.moved = now;
         }
-        StartNotificationAnimation(notification, area.bounds.right - width - margin, y, false, 160);
-        y += height + gap;
+        y += notification.height + gap;
     }
+    if (dc) DeleteDC(dc);
     for (auto* notification : overflow) DismissNotification(*notification);
 }
 
-void MainWindow::StartNotificationAnimation(DesktopNotification& notification, int target_x, int target_y,
-                                            bool hiding, UINT duration_ms) {
-    if (!notification.window) return;
-    RECT current{};
-    GetWindowRect(notification.window, &current);
-    const auto size_matches = current.right - current.left == notification.width &&
-                              current.bottom - current.top == notification.height;
-    if (notification.animating && notification.target_x == target_x &&
-        notification.target_y == target_y && notification.hiding == hiding && size_matches) return;
-    if (!notification.animating && !notification.entering && !hiding &&
-        notification.target_x == target_x && notification.target_y == target_y && size_matches) return;
+int MainWindow::NotificationY(const DesktopNotification& notification, std::chrono::steady_clock::time_point now) {
+    const auto elapsed = std::chrono::duration<double, std::milli>(now - notification.moved).count();
+    const auto progress = CubicBezier(0.2, 0.8, 0.2, 1.0, elapsed / kReflowMs);
+    return notification.from_y + static_cast<int>(std::lround((notification.to_y - notification.from_y) * progress));
+}
 
-    if (notification.entering || !IsWindowVisible(notification.window)) {
-        notification.start_x = notification.hidden_x;
-        notification.start_y = target_y;
-        SetWindowPos(notification.window, HWND_TOPMOST, notification.start_x, notification.start_y,
-                     notification.width, notification.height,
-                     SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
-    } else {
-        notification.start_x = current.left;
-        notification.start_y = current.top;
-        SetWindowPos(notification.window, HWND_TOPMOST, current.left, current.top,
-                     notification.width, notification.height,
-                     SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+// Runs every frame of a card's life: its timer bar, the slide in and out, and the move when the stack changes.
+void MainWindow::RenderNotification(DesktopNotification& notification) {
+    const auto now = std::chrono::steady_clock::now();
+    const auto since = [now](std::chrono::steady_clock::time_point start) {
+        return std::chrono::duration<double, std::milli>(now - start).count();
+    };
+    if (!notification.hiding && notification.life_ms && since(notification.shown) >= kBarDelayMs + notification.life_ms) {
+        DismissNotification(notification);
     }
-    notification.target_x = target_x;
-    notification.target_y = target_y;
-    notification.hiding = hiding;
-    notification.animating = true;
-    notification.animation_duration_ms = duration_ms;
-    notification.animation_started = std::chrono::steady_clock::now();
-    SetTimer(notification.window, kNotificationAnimationTimer, 15, nullptr);
+    if (notification.hiding && (!notification.placed || since(notification.hidden) >= kSlideOutMs)) {
+        const auto window = notification.window;
+        DestroyWindow(window);
+        RemoveNotification(window);
+        return;
+    }
+    if (!notification.placed) return;
+
+    const auto scale = [dpi = notification.dpi](int value) { return openreplay::ui::ScaleForDpi(value, dpi); };
+    const auto slide = notification.hiding
+                           ? CubicBezier(0.55, 0.0, 1.0, 0.45, since(notification.hidden) / kSlideOutMs)
+                           : 1.0 - CubicBezier(0.22, 1.0, 0.36, 1.0, since(notification.entered) / kSlideInMs);
+    // The card slides past the screen edge; what is beyond it is cut off rather than shown on the next monitor.
+    const int left = notification.x +
+                     static_cast<int>(std::lround(slide * (notification.width + scale(kNotificationMargin))));
+    const int visible_width = std::min(notification.width, notification.edge - left);
+    if (visible_width <= 0) {
+        ShowWindow(notification.window, SW_HIDE);
+        return;
+    }
+
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(info.bmiHeader);
+    info.bmiHeader.biWidth = notification.width;
+    info.bmiHeader.biHeight = -notification.height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    const auto screen = GetDC(nullptr);
+    const auto dc = CreateCompatibleDC(screen);
+    const auto bitmap = dc ? CreateDIBSection(dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0) : nullptr;
+    if (bitmap && bits) {
+        const auto old_bitmap = SelectObject(dc, bitmap);
+        PaintNotification(dc, static_cast<std::uint8_t*>(bits), notification, now);
+        POINT position{left, NotificationY(notification, now)};
+        SIZE size{visible_width, notification.height};
+        POINT source{};
+        BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+        UpdateLayeredWindow(notification.window, screen, &position, &size, dc, &source, 0, &blend, ULW_ALPHA);
+        SelectObject(dc, old_bitmap);
+        if (!IsWindowVisible(notification.window)) {
+            SetWindowPos(notification.window, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+        }
+    }
+    if (bitmap) DeleteObject(bitmap);
+    if (dc) DeleteDC(dc);
+    ReleaseDC(nullptr, screen);
+}
+
+// Draws the card into a top-down 32-bit DIB whose pixels are `pixels`. GDI leaves alpha at zero, so the last pass
+// makes the card opaque with antialiased corners.
+void MainWindow::PaintNotification(HDC dc, std::uint8_t* pixels, const DesktopNotification& notification,
+                                   std::chrono::steady_clock::time_point now) {
+    const auto dpi = notification.dpi;
+    const auto scale = [dpi](int value) { return openreplay::ui::ScaleForDpi(value, dpi); };
+    const auto age = std::chrono::duration<double, std::milli>(now - notification.shown).count();
+    const int width = notification.width;
+    const int height = notification.height;
+    const int border = std::max(1, scale(1));
+    const auto& fonts = NotificationFontsFor(dpi);
+    const auto layout = MeasureNotification(dc, dpi, fonts, notification.tag, notification.title, notification.message,
+                                            notification.media_width);
+    const auto fill = [dc](RECT rect, COLORREF color) {
+        SetDCBrushColor(dc, color);
+        FillRect(dc, &rect, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    };
+    const auto for_pixels = [pixels, width](RECT rect, auto&& change) {
+        GdiFlush();
+        for (int row = rect.top; row < rect.bottom; ++row) {
+            auto* pixel = pixels + (static_cast<std::size_t>(row) * width + rect.left) * 4;
+            for (int column = rect.left; column < rect.right; ++column, pixel += 4) change(pixel);
+        }
+    };
+    // Text appears left to right: only the part of its box left of the moving edge is drawn.
+    const auto wiped = [dc, age](RECT box, double start, double duration, auto&& draw) {
+        const auto progress = CubicBezier(0.4, 0.0, 0.2, 1.0, (age - start) / duration);
+        if (progress <= 0.0) return;
+        const auto saved = SaveDC(dc);
+        IntersectClipRect(dc, box.left, box.top,
+                          box.left + static_cast<int>(std::lround((box.right - box.left) * progress)), box.bottom);
+        draw();
+        RestoreDC(dc, saved);
+    };
+
+    const auto old_font = SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT));
+    SetBkMode(dc, TRANSPARENT);
+    fill({0, 0, width, height}, kNotificationBorder);
+    fill({border, border, width - border, height - border}, kNotificationBackground);
+
+    // The accent bar is the card's timer: it drains downward over the card's life.
+    const auto drained = notification.life_ms
+                             ? std::clamp((age - kBarDelayMs) / notification.life_ms, 0.0, 1.0) : 0.0;
+    fill({border, border + static_cast<int>(std::lround((height - 2 * border) * drained)), border + scale(4),
+          height - border}, notification.accent);
+
+    // The tag flashes in its accent color, then settles into colored text.
+    SelectObject(dc, fonts.tag.For(notification.tag));
+    SetTextCharacterExtra(dc, Pixels(10.5 * 0.14, dpi));
+    SIZE tag_size{};
+    GetTextExtentPoint32W(dc, notification.tag.c_str(), static_cast<int>(notification.tag.size()), &tag_size);
+    const RECT tag_box{layout.tag.left - scale(5), layout.tag.top - scale(1),
+                       layout.tag.left + tag_size.cx + scale(5), layout.tag.bottom + scale(1)};
+    const auto flash_progress = (age - 120.0) / 760.0;
+    const auto flash = flash_progress < 0.4 ? 1.0 : 1.0 - EaseOut((flash_progress - 0.4) / 0.6);
+    wiped(tag_box, 120.0, 200.0, [&] {
+        if (flash > 0.0) fill(tag_box, Mix(kNotificationBackground, notification.accent, flash));
+        SetTextColor(dc, Mix(notification.accent, RGB(11, 11, 12), flash));
+        auto rect = layout.tag;
+        DrawTextW(dc, notification.tag.c_str(), -1, &rect, DT_SINGLELINE | DT_NOPREFIX | DT_NOCLIP);
+    });
+    SetTextCharacterExtra(dc, 0);
+
+    wiped(layout.main, 190.0, 260.0, [&] {
+        SelectObject(dc, fonts.main.For(notification.title));
+        SetTextColor(dc, RGB(242, 242, 243));
+        auto rect = layout.main;
+        DrawTextW(dc, notification.title.c_str(), -1, &rect, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    });
+    if (!notification.message.empty()) {
+        wiped(layout.meta, 250.0, 260.0, [&] {
+            SelectObject(dc, fonts.meta.For(notification.message));
+            SetTextColor(dc, RGB(142, 142, 149));
+            auto rect = layout.meta;
+            DrawTextW(dc, notification.message.c_str(), -1, &rect,
+                      DT_WORDBREAK | DT_EDITCONTROL | DT_END_ELLIPSIS | DT_NOPREFIX);
+        });
+    }
+
+    const auto& media = layout.media;
+    if (media.right > media.left) {
+        fill({media.left, media.top, media.left + border, media.bottom}, kNotificationBorder);
+        const RECT image{media.left + border, media.top, media.right, media.bottom};
+        if (notification.live) {
+            const auto seconds = static_cast<long long>(age / 1000.0);
+            const auto timer = std::format(L"{:02}:{:02}", seconds / 60, seconds % 60);
+            SelectObject(dc, fonts.timer.For(timer));
+            SIZE timer_size{};
+            GetTextExtentPoint32W(dc, timer.c_str(), static_cast<int>(timer.size()), &timer_size);
+            const int dot = scale(9);
+            const int dot_gap = scale(8);
+            const int x = image.left + (image.right - image.left - dot - dot_gap - timer_size.cx) / 2;
+            const int dot_top = (image.top + image.bottom - dot) / 2;
+            wiped(media, 250.0, 260.0, [&] {
+                // Blinks once a second, like a camera's record light.
+                if (std::fmod(age, 1000.0) < 500.0) fill({x, dot_top, x + dot, dot_top + dot}, RGB(255, 77, 82));
+                SetTextColor(dc, RGB(242, 242, 243));
+                RECT rect{x + dot + dot_gap, image.top, image.right, image.bottom};
+                DrawTextW(dc, timer.c_str(), -1, &rect, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+            });
+        } else if (!notification.thumbnail) {
+            fill(image, RGB(26, 26, 28));
+        } else {
+            BITMAP source{};
+            GetObjectW(notification.thumbnail, sizeof(source), &source);
+            const int source_width = source.bmWidth;
+            const int source_height = std::abs(source.bmHeight);
+            const auto source_dc = CreateCompatibleDC(dc);
+            if (source_dc && source_width > 0 && source_height > 0) {
+                const auto old_source = SelectObject(source_dc, notification.thumbnail);
+                // Cover the slot: crop the thumbnail to the slot's shape around its center.
+                const int target_width = image.right - image.left;
+                const int target_height = image.bottom - image.top;
+                int crop_width = source_width;
+                int crop_height = MulDiv(source_width, target_height, target_width);
+                if (crop_height > source_height) {
+                    crop_height = source_height;
+                    crop_width = MulDiv(source_height, target_width, target_height);
+                }
+                SetStretchBltMode(dc, HALFTONE);
+                SetBrushOrgEx(dc, 0, 0, nullptr);
+                StretchBlt(dc, image.left, image.top, target_width, target_height, source_dc,
+                           (source_width - crop_width) / 2, (source_height - crop_height) / 2, crop_width,
+                           crop_height, SRCCOPY);
+                SelectObject(source_dc, old_source);
+            }
+            if (source_dc) DeleteDC(source_dc);
+
+            if (!notification.badge.empty()) {
+                SelectObject(dc, fonts.badge ? fonts.badge : GetStockObject(DEFAULT_GUI_FONT));
+                SIZE badge_size{};
+                GetTextExtentPoint32W(dc, notification.badge.c_str(), static_cast<int>(notification.badge.size()),
+                                      &badge_size);
+                RECT badge{image.right - scale(5) - badge_size.cx - 2 * scale(4),
+                           image.bottom - scale(4) - badge_size.cy - 2 * scale(1), image.right - scale(5),
+                           image.bottom - scale(4)};
+                // Black at 80% over the thumbnail.
+                for_pixels(badge, [](std::uint8_t* pixel) {
+                    for (int channel = 0; channel < 3; ++channel) pixel[channel] = static_cast<std::uint8_t>(pixel[channel] / 5);
+                });
+                SetTextColor(dc, RGB(255, 255, 255));
+                DrawTextW(dc, notification.badge.c_str(), -1, &badge,
+                          DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
+            }
+
+            // A camera flash when the thumbnail appears: CSS brightness(2.8) saturate(.2) at 18%, then back.
+            const auto flash_start = std::max(
+                90.0, std::chrono::duration<double, std::milli>(notification.thumbnail_loaded - notification.shown).count());
+            const auto progress = (age - flash_start) / 560.0;
+            if (progress > 0.0 && progress < 1.0) {
+                const auto amount = progress < 0.18 ? EaseOut(progress / 0.18) : 1.0 - EaseOut((progress - 0.18) / 0.82);
+                const auto brightness = 1.0 + 1.8 * amount;
+                const auto saturation = 1.0 - 0.8 * amount;
+                for_pixels(image, [brightness, saturation](std::uint8_t* pixel) {
+                    const auto luma = 0.0722 * pixel[0] + 0.7152 * pixel[1] + 0.2126 * pixel[2];
+                    for (int channel = 0; channel < 3; ++channel) {
+                        pixel[channel] = static_cast<std::uint8_t>(
+                            std::clamp((luma + (pixel[channel] - luma) * saturation) * brightness, 0.0, 255.0));
+                    }
+                });
+            }
+        }
+    }
+    SelectObject(dc, old_font);
+
+    const double radius = scale(4);
+    const auto corner = [radius](double position, int size) {
+        return position < radius ? radius - position : position > size - radius ? position - (size - radius) : 0.0;
+    };
+    GdiFlush();
+    for (int row = 0; row < height; ++row) {
+        const auto dy = corner(row + 0.5, height);
+        auto* pixel = pixels + static_cast<std::size_t>(row) * width * 4;
+        for (int column = 0; column < width; ++column, pixel += 4) {
+            const auto dx = corner(column + 0.5, width);
+            if (dx <= 0.0 || dy <= 0.0) {
+                pixel[3] = 255;
+                continue;
+            }
+            const auto distance = std::hypot(dx, dy);
+            if (distance > radius - border) {
+                pixel[0] = static_cast<std::uint8_t>((kNotificationBorder >> 16) & 0xFF);
+                pixel[1] = static_cast<std::uint8_t>((kNotificationBorder >> 8) & 0xFF);
+                pixel[2] = static_cast<std::uint8_t>(kNotificationBorder & 0xFF);
+            }
+            const auto coverage = std::clamp(radius + 0.5 - distance, 0.0, 1.0);
+            for (int channel = 0; channel < 3; ++channel) {
+                pixel[channel] = static_cast<std::uint8_t>(std::lround(pixel[channel] * coverage));
+            }
+            pixel[3] = static_cast<std::uint8_t>(std::lround(255.0 * coverage));
+        }
+    }
 }
 
 void MainWindow::DismissNotification(DesktopNotification& notification) {
     if (!notification.window || notification.hiding) return;
-    KillTimer(notification.window, kNotificationHideTimer);
-    StartNotificationAnimation(notification, notification.hidden_x, notification.target_y, true, 140);
+    notification.hiding = true;
+    notification.hidden = std::chrono::steady_clock::now();
 }
 
 void MainWindow::DismissNotificationChannel(NotificationChannel channel) {
@@ -3566,35 +3923,12 @@ void MainWindow::RemoveNotification(HWND window) {
     LayoutNotifications();
 }
 
-void MainWindow::OpenNotificationOutput(const DesktopNotification& notification) {
-    if (notification.output.empty()) return;
-    std::error_code error;
-    const auto target = std::filesystem::is_directory(notification.output, error)
-                            ? notification.output : notification.output.parent_path();
-    ShellExecuteW(GetWindowHandle(), L"open", target.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-}
-
-void MainWindow::CopyNotificationOutput(const DesktopNotification& notification) {
-    if (notification.output.empty() || !OpenClipboard(notification.window)) return;
-    EmptyClipboard();
-    const auto text = notification.output.wstring();
-    const auto bytes = (text.size() + 1) * sizeof(wchar_t);
-    const auto memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
-    if (memory) {
-        if (auto* destination = static_cast<wchar_t*>(GlobalLock(memory))) {
-            memcpy(destination, text.c_str(), bytes);
-            GlobalUnlock(memory);
-            if (!SetClipboardData(CF_UNICODETEXT, memory)) GlobalFree(memory);
-        } else {
-            GlobalFree(memory);
-        }
-    }
-    CloseClipboard();
-}
-
-void MainWindow::ShareNotificationOutput(const DesktopNotification& notification, bool webhook) {
-    if (notification.output.empty()) return;
-    ShareReplay(notification.output, webhook);
+// The game in front, or the one behind OpenReplay's own overlay. Empty for anything that is not fullscreen.
+std::wstring MainWindow::ForegroundGameName() const {
+    DWORD process_id = 0;
+    const auto foreground = GetForegroundWindow();
+    GetWindowThreadProcessId(foreground, &process_id);
+    return GameNameOf(process_id == GetCurrentProcessId() ? last_external_window_ : foreground);
 }
 
 void MainWindow::TogglePerformanceOverlay() {
@@ -3610,121 +3944,22 @@ LRESULT CALLBACK MainWindow::NotificationWindowProc(HWND window, UINT message, W
         SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(notification));
     }
     if (!notification || !notification->owner) return DefWindowProcW(window, message, wparam, lparam);
-    auto* self = notification->owner;
-    if (message == WM_TIMER && wparam == kNotificationHideTimer) {
-        KillTimer(window, kNotificationHideTimer);
-        notification->hide_timer_started = false;
-        self->DismissNotification(*notification);
+    if (message == WM_TIMER && wparam == kNotificationFrameTimer) {
+        notification->owner->RenderNotification(*notification);
         return 0;
     }
-    if (message == WM_TIMER && wparam == kNotificationAnimationTimer) {
-        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - notification->animation_started).count();
-        const auto progress = std::clamp(static_cast<double>(elapsed) /
-                                             static_cast<double>(notification->animation_duration_ms),
-                                         0.0, 1.0);
-        const auto eased = notification->hiding
-                               ? progress * progress
-                               : 1.0 - std::pow(1.0 - progress, 3.0);
-        const auto x = notification->start_x + static_cast<int>(std::lround(
-            (notification->target_x - notification->start_x) * eased));
-        const auto y = notification->start_y + static_cast<int>(std::lround(
-            (notification->target_y - notification->start_y) * eased));
-        SetWindowPos(window, HWND_TOPMOST, x, y, 0, 0,
-                      SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
-        if (progress >= 1.0) {
-            KillTimer(window, kNotificationAnimationTimer);
-            notification->animating = false;
-            notification->entering = false;
-            if (notification->hiding) {
-                DestroyWindow(window);
-                self->RemoveNotification(window);
-            } else if (notification->display_ms && !notification->hide_timer_started) {
-                SetTimer(window, kNotificationHideTimer, notification->display_ms, nullptr);
-                notification->hide_timer_started = true;
-            }
+    if (message == kNotificationThumbnailMessage) {
+        const auto bitmap = reinterpret_cast<HBITMAP>(lparam);
+        if (wparam != notification->thumbnail_request) {
+            DeleteObject(bitmap);
+        } else {
+            if (notification->thumbnail) DeleteObject(notification->thumbnail);
+            notification->thumbnail = bitmap;
+            notification->thumbnail_loaded = std::chrono::steady_clock::now();
         }
         return 0;
     }
     if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
-    if (message == WM_ERASEBKGND) return 1;
-    const auto dpi = notification->dpi ? notification->dpi : openreplay::ui::WindowDpi(window);
-    const auto actions = NotificationActionsFor(!notification->output.empty(), notification->shareable,
-                                                self->discord_webhook_configured_, self->english_);
-    if (message == WM_PAINT) {
-        PAINTSTRUCT paint{};
-        const auto dc = BeginPaint(window, &paint);
-        if (!dc) return 0;
-        RECT bounds{};
-        GetClientRect(window, &bounds);
-        const auto scale = [dpi](int value) { return openreplay::ui::ScaleForDpi(value, dpi); };
-        const auto fill = [dc](const RECT& rect, COLORREF color) {
-            if (const auto brush = CreateSolidBrush(color)) {
-                FillRect(dc, &rect, brush);
-                DeleteObject(brush);
-            }
-        };
-        const NotificationFonts fonts{dpi};
-        const auto layout = MeasureNotification(dc, dpi, fonts, notification->message, actions);
-        fill(bounds, RGB(23, 23, 26));
-        if (!notification->rounded_by_dwm) {
-            const auto pen = CreatePen(PS_SOLID, 1, RGB(46, 46, 51));
-            const auto old_pen = SelectObject(dc, pen ? pen : GetStockObject(NULL_PEN));
-            const auto old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-            RoundRect(dc, 0, 0, bounds.right, bounds.bottom, scale(20), scale(20));
-            SelectObject(dc, old_brush);
-            SelectObject(dc, old_pen);
-            if (pen) DeleteObject(pen);
-        }
-        fill(layout.marker, notification->error ? RGB(255, 107, 110)
-                            : notification->progress ? RGB(224, 179, 65)
-                                                     : RGB(118, 185, 0));
-        SetBkMode(dc, TRANSPARENT);
-        const auto old_font = SelectObject(dc, fonts.title ? fonts.title : GetStockObject(DEFAULT_GUI_FONT));
-        SetTextColor(dc, RGB(237, 237, 237));
-        auto title_rect = layout.title;
-        DrawTextW(dc, notification->title.c_str(), -1, &title_rect, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-        if (!notification->message.empty()) {
-            SelectObject(dc, fonts.body ? fonts.body : GetStockObject(DEFAULT_GUI_FONT));
-            SetTextColor(dc, RGB(161, 161, 170));
-            auto message_rect = layout.message;
-            DrawTextW(dc, notification->message.c_str(), -1, &message_rect,
-                      DT_WORDBREAK | DT_EDITCONTROL | DT_END_ELLIPSIS | DT_NOPREFIX);
-        }
-        SelectObject(dc, fonts.action ? fonts.action : GetStockObject(DEFAULT_GUI_FONT));
-        SetTextColor(dc, RGB(139, 212, 0));
-        for (std::size_t index = 0; index < layout.actions.size(); ++index) {
-            auto rect = layout.actions[index].second;
-            DrawTextW(dc, actions[index].second.c_str(), -1, &rect, DT_SINGLELINE | DT_NOPREFIX);
-        }
-        SelectObject(dc, old_font);
-        EndPaint(window, &paint);
-        return 0;
-    }
-    if (message == WM_LBUTTONUP) {
-        const POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-        std::optional<NotificationAction> clicked;
-        if (const auto dc = GetDC(window)) {
-            const NotificationFonts fonts{dpi};
-            const auto layout = MeasureNotification(dc, dpi, fonts, notification->message, actions);
-            ReleaseDC(window, dc);
-            for (const auto& [action, rect] : layout.actions) {
-                if (PtInRect(&rect, point)) clicked = action;
-            }
-        }
-        if (!clicked) {
-            if (notification->output.empty()) self->ToggleOverlay();
-        } else if (*clicked == NotificationAction::Copy) {
-            self->ShareNotificationOutput(*notification, false);
-        } else if (*clicked == NotificationAction::Webhook) {
-            self->ShareNotificationOutput(*notification, true);
-        } else if (*clicked == NotificationAction::OpenFolder) {
-            self->OpenNotificationOutput(*notification);
-        } else {
-            self->CopyNotificationOutput(*notification);
-        }
-        return 0;
-    }
     return DefWindowProcW(window, message, wparam, lparam);
 }
 
@@ -3764,11 +3999,50 @@ void MainWindow::ToggleRecording() {
     ApplyResponse(response);
     const auto output = Field(response, "last_output");
     const auto path = output.empty() ? std::filesystem::path{} : std::filesystem::path{openreplay::FromUtf8(output)};
-    ShowToast(was_recording ? (english_ ? L"Recording saved" : L"Запись сохранена")
-                            : (english_ ? L"Recording started" : L"Запись начата"),
-              was_recording && !path.empty() ? path.filename().wstring()
-                                             : (english_ ? L"Capture is running" : L"Захват запущен"),
-              false, false, true, was_recording ? path : std::filesystem::path{});
+    const auto game = ForegroundGameName();
+    if (!was_recording) {
+        const auto stop = recording_hotkey_registered_
+                              ? openreplay::FromUtf8(settings_.recording_hotkey_chord) +
+                                    (english_ ? L" to stop" : L" — остановить")
+                              : std::wstring{};
+        ShowToast(english_ ? L"Recording started" : L"Идёт запись", openreplay::ui::JoinDetails({game, stop}),
+                  false, false, true, {}, NotificationChannel::Recording);
+        return;
+    }
+    if (path.empty()) {
+        // Without a file the card would read as a running recording, so it goes out as a plain notification.
+        ShowToast(english_ ? L"Recording saved" : L"Запись сохранена", game, false, false, true);
+        return;
+    }
+    ShowWhenMediaReadyAsync(path, [this, path, game](std::optional<std::uint64_t> seconds) {
+        std::error_code size_error;
+        const auto size = std::filesystem::file_size(path, size_error);
+        ShowToast(english_ ? L"Recording saved" : L"Запись сохранена",
+                  openreplay::ui::JoinDetails(
+                      {game, seconds ? openreplay::ui::DurationText(std::chrono::seconds{*seconds}) : L"",
+                       size_error ? L"" : ByteSize(size, english_)}),
+                  false, false, true, path, NotificationChannel::Recording);
+    });
+}
+
+// The muxer can still be finishing a file when its save is reported, and until then the shell cannot read its length
+// or thumbnail. Waits off the UI thread, three seconds at most, then shows the card with whatever length it got.
+winrt::fire_and_forget MainWindow::ShowWhenMediaReadyAsync(std::filesystem::path path,
+                                                          std::function<void(std::optional<std::uint64_t>)> show) {
+    const auto dispatcher = DispatcherQueue();
+    const auto weak = get_weak();
+    co_await winrt::resume_background();
+    std::optional<std::uint64_t> seconds;
+    if (SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED))) {
+        for (int attempt = 0; attempt < 20 && !seconds; ++attempt) {
+            if (attempt) Sleep(150);
+            seconds = MediaSeconds(path);
+        }
+        CoUninitialize();
+    }
+    dispatcher.TryEnqueue([weak, show = std::move(show), seconds] {
+        if (const auto self = weak.get()) show(seconds);
+    });
 }
 
 void MainWindow::ScreenshotButton_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&) {
@@ -3808,9 +4082,12 @@ void MainWindow::CompleteScreenshot(openreplay::Response response) {
     }
     const auto output = Field(response, "last_output");
     const auto path = output.empty() ? std::filesystem::path{} : std::filesystem::path{openreplay::FromUtf8(output)};
-    ShowToast(english_ ? L"Screenshot saved" : L"Снимок сохранён",
-              path.empty() ? (english_ ? L"PNG image saved" : L"PNG сохранён") : path.filename().wstring(),
-              false, false, true, path);
+    auto format = path.extension().wstring();
+    if (!format.empty()) format.erase(0, 1);
+    std::ranges::transform(format, format.begin(), [](wchar_t character) { return std::towupper(character); });
+    ShowToast(english_ ? L"Screenshot saved" : L"Снимок экрана сохранён",
+              openreplay::ui::JoinDetails({ForegroundGameName(), path.empty() ? L"" : ImageSizeText(path), format}),
+              false, false, true, path, NotificationChannel::Screenshot);
 }
 
 void MainWindow::ReplayToggle_Toggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&) {
@@ -4361,10 +4638,13 @@ void MainWindow::ExitApplication() {
 LRESULT CALLBACK MainWindow::WindowSubclass(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
                                              UINT_PTR, DWORD_PTR context) {
     auto* self = reinterpret_cast<MainWindow*>(context);
-    // WinUI can re-show the main window after a background launch hid it.
-    if (message == WM_SHOWWINDOW && wparam && !self->visible_ && !self->exiting_) {
-        ShowWindow(window, SW_HIDE);
-        return 0;
+    // WinUI or the launcher's show command can show the main window after a background launch hid it.
+    // Hiding it from WM_SHOWWINDOW does not work: that message arrives before the show, which then goes
+    // through anyway. Dropping the show flag here stops every path, and cloaking keeps DWM from still drawing it.
+    if (message == WM_WINDOWPOSCHANGING && !self->visible_ && !self->exiting_) {
+        auto* position = reinterpret_cast<WINDOWPOS*>(lparam);
+        if (position->flags & SWP_SHOWWINDOW) SetCloaked(window, true);
+        position->flags &= ~SWP_SHOWWINDOW;
     }
     // Once the panel takes focus from a fullscreen game, the system pushes it into the work area,
     // beside a taskbar the game still covers. Keep it where PositionOverlayWindow put it.

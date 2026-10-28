@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "PerformanceOverlay.h"
+#include "GdiFonts.h"
 #include "WindowPlacement.h"
 
 #include <dxgi1_4.h>
@@ -339,8 +340,8 @@ void PerformanceOverlay::SampleFrameMetrics() {
                            settings_.performance_show_frametime || settings_.performance_show_frametime_graph;
     if (!requested) return;
     DWORD foreground_process = 0;
-    if (const auto foreground = GetForegroundWindow()) {
-        GetWindowThreadProcessId(foreground, &foreground_process);
+    if (const auto followed = game_window_ ? game_window_ : GetForegroundWindow()) {
+        GetWindowThreadProcessId(followed, &foreground_process);
     }
     if (!telemetry_process_ && !telemetry_launch_attempted_ && FrameTargetProcess(foreground_process)) {
         telemetry_pending_process_ = foreground_process;
@@ -452,7 +453,7 @@ void PerformanceOverlay::SampleDxgiMemory() {
     IDXGIFactory1* factory = nullptr;
     if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return;
 
-    const auto area = ForegroundMonitorArea(owner_);
+    const auto area = FollowedArea();
     IDXGIAdapter1* fallback_adapter = nullptr;
     IDXGIAdapter1* selected_adapter = nullptr;
     for (UINT adapter_index = 0;; ++adapter_index) {
@@ -497,6 +498,7 @@ void PerformanceOverlay::SampleDxgiMemory() {
 
 void PerformanceOverlay::Show() {
     if (!window_ || visible_) return;
+    TrackGameWindow();
     SampleMetrics();
     refresh_tick_ = 0;
     ApplySettings(settings_, english_);
@@ -518,6 +520,7 @@ void PerformanceOverlay::Hide() {
     static_cast<void>(TelemetryCommand("pause"));
     telemetry_target_process_ = 0;
     telemetry_pending_process_ = 0;
+    game_window_ = nullptr;
     sample_.frame_times.clear();
     frame_history_.clear();
     graph_scale_ms_ = 0.0;
@@ -540,9 +543,23 @@ int PerformanceOverlay::ContentHeight() const noexcept {
     return height + kOverlayPadding;
 }
 
+// The overlay belongs to the last fullscreen game, so alt-tabbing to another window or monitor leaves it,
+// and its FPS, on that game until another fullscreen app comes to the front or the game closes.
+void PerformanceOverlay::TrackGameWindow() {
+    const auto foreground = GetForegroundWindow();
+    DWORD process_id = 0;
+    if (foreground) GetWindowThreadProcessId(foreground, &process_id);
+    if (foreground && IsFullscreenWindow(foreground) && FrameTargetProcess(process_id)) game_window_ = foreground;
+    else if (game_window_ && !IsWindow(game_window_)) game_window_ = nullptr;
+}
+
+MonitorArea PerformanceOverlay::FollowedArea() const noexcept {
+    return game_window_ ? WindowMonitorArea(game_window_) : ForegroundMonitorArea(owner_);
+}
+
 void PerformanceOverlay::PositionWindow() {
     if (!window_) return;
-    const auto area = ForegroundMonitorArea(owner_);
+    const auto area = FollowedArea();
     if (!area.monitor) return;
     const auto dpi = MonitorDpi(area.monitor);
     const int width = ScaleForDpi(kOverlayWidth, dpi);
@@ -581,36 +598,31 @@ void PerformanceOverlay::Paint(HDC dc, const RECT& bounds) {
             DeleteObject(brush);
         }
     };
-    const auto make_font = [&](int size, int weight, const wchar_t* face = L"Public Sans") {
-        return CreateFontW(-scale(size), 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                           OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, face);
-    };
-    const auto title_font = make_font(13, FW_SEMIBOLD);
-    const auto big_font = make_font(40, FW_SEMIBOLD);
-    const auto big_light_font = make_font(40, FW_LIGHT);
-    const auto small_font = make_font(12, FW_NORMAL);
-    const auto caption_font = make_font(10, FW_NORMAL);
-    const auto label_font = make_font(13, FW_NORMAL);
-    const auto value_font = make_font(13, FW_MEDIUM);
-    const auto unit_font = make_font(11, FW_NORMAL);
-    const auto key_font = make_font(10, FW_NORMAL, L"Cascadia Mono");
-    const std::array fonts{title_font, big_font, big_light_font, small_font, caption_font,
-                           label_font, value_font, unit_font, key_font};
+    const GdiFont title_font{scale(13), FW_BOLD};
+    const GdiFont big_font{scale(40), FW_BOLD};
+    const GdiFont big_light_font{scale(40), FW_MEDIUM};
+    const GdiFont small_font{scale(12), FW_MEDIUM};
+    const GdiFont caption_font{scale(10), FW_MEDIUM};
+    const GdiFont label_font{scale(13), FW_MEDIUM};
+    const GdiFont value_font{scale(13), FW_SEMIBOLD};
+    const GdiFont unit_font{scale(11), FW_MEDIUM};
+    const auto key_font = CreateFontW(-scale(10), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                      OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
+                                      L"Cascadia Mono");
     const auto old_font = SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT));
-    const auto use = [dc](HFONT font) { SelectObject(dc, font ? font : GetStockObject(DEFAULT_GUI_FONT)); };
-    const auto text = [&](HFONT font, COLORREF color, std::wstring_view value, RECT rect, UINT format) {
-        use(font);
+    const auto text = [&](const GdiFont& font, COLORREF color, std::wstring_view value, RECT rect, UINT format) {
+        SelectObject(dc, font.For(value));
         SetTextColor(dc, color);
         DrawTextW(dc, value.data(), static_cast<int>(value.size()), &rect, format | DT_SINGLELINE | DT_NOPREFIX);
     };
-    const auto text_width = [&](HFONT font, std::wstring_view value) {
-        use(font);
+    const auto text_width = [&](const GdiFont& font, std::wstring_view value) {
+        SelectObject(dc, font.For(value));
         SIZE size{};
         GetTextExtentPoint32W(dc, value.data(), static_cast<int>(value.size()), &size);
         return static_cast<int>(size.cx);
     };
-    const auto descent = [&](HFONT font) {
-        use(font);
+    const auto descent = [&](const GdiFont& font) {
+        SelectObject(dc, font.For({}));
         TEXTMETRICW metrics{};
         GetTextMetricsW(dc, &metrics);
         return static_cast<int>(metrics.tmDescent);
@@ -644,12 +656,17 @@ void PerformanceOverlay::Paint(HDC dc, const RECT& bounds) {
     // Keycaps for the fixed toggle shortcut, laid out right to left.
     const auto key_pen = CreatePen(PS_SOLID, 1, RGB(46, 46, 51));
     SelectObject(dc, key_pen ? key_pen : GetStockObject(NULL_PEN));
+    SelectObject(dc, key_font ? key_font : GetStockObject(DEFAULT_GUI_FONT));
+    SetTextColor(dc, RGB(196, 196, 200));
     int key_right = right;
     for (const std::wstring_view key : {std::wstring_view{L"R"}, std::wstring_view{L"Alt"}}) {
-        const int key_width = std::max(scale(22), text_width(key_font, key) + scale(10));
+        SIZE key_size{};
+        GetTextExtentPoint32W(dc, key.data(), static_cast<int>(key.size()), &key_size);
+        const int key_width = std::max(scale(22), static_cast<int>(key_size.cx) + scale(10));
         RECT cap{key_right - key_width, y + scale(2), key_right, header_bottom - scale(1)};
         RoundRect(dc, cap.left, cap.top, cap.right, cap.bottom, scale(10), scale(10));
-        text(key_font, RGB(196, 196, 200), key, cap, DT_CENTER | DT_VCENTER);
+        DrawTextW(dc, key.data(), static_cast<int>(key.size()), &cap,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         key_right -= key_width + scale(3);
     }
     SelectObject(dc, previous_pen);
@@ -847,9 +864,7 @@ void PerformanceOverlay::Paint(HDC dc, const RECT& bounds) {
     section(english_ ? L"SYSTEM" : L"СИСТЕМА", system_rows);
 
     SelectObject(dc, old_font);
-    for (const auto font : fonts) {
-        if (font) DeleteObject(font);
-    }
+    if (key_font) DeleteObject(key_font);
 }
 
 LRESULT CALLBACK PerformanceOverlay::WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -875,6 +890,7 @@ LRESULT CALLBACK PerformanceOverlay::WindowProc(HWND window, UINT message, WPARA
             ++self->topmost_raises_;
             break;
         }
+        self->TrackGameWindow();
         self->SampleFrameMetrics();
         if (++self->refresh_tick_ >= kSystemRefreshTicks) {
             self->refresh_tick_ = 0;

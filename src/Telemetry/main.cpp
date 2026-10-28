@@ -108,29 +108,31 @@ HWND TargetWindow(DWORD process_id) {
     return search.window;
 }
 
-// The performance overlay repaints up to 60 times a second; a desktop update confined to it is not a game frame.
-bool OverlayOnlyUpdate(IDXGIOutputDuplication* output, const DXGI_OUTDUPL_FRAME_INFO& frame, const RECT& overlay,
-                       std::vector<std::uint8_t>& metadata) {
-    if (IsRectEmpty(&overlay) || !frame.TotalMetadataBufferSize) return false;
+// Windows composed over the game (Discord's full-screen overlay, our performance overlay, notifications) update
+// the desktop on their own. A game present repaints its whole window, so only that counts as a game frame.
+bool GameFrame(IDXGIOutputDuplication* output, const DXGI_OUTDUPL_FRAME_INFO& frame, const RECT& game,
+               std::vector<std::uint8_t>& metadata) {
+    if (IsRectEmpty(&game) || !frame.TotalMetadataBufferSize) return false;
     metadata.resize(frame.TotalMetadataBufferSize);
-    const auto inside = [&overlay](const RECT& rect) {
-        return rect.left >= overlay.left && rect.top >= overlay.top &&
-               rect.right <= overlay.right && rect.bottom <= overlay.bottom;
+    std::uint64_t covered = 0;
+    const auto add = [&](const RECT& rect) {
+        RECT overlap{};
+        if (IntersectRect(&overlap, &rect, &game)) {
+            covered += static_cast<std::uint64_t>(overlap.right - overlap.left) *
+                       static_cast<std::uint64_t>(overlap.bottom - overlap.top);
+        }
     };
     UINT size = 0;
     const auto moves = reinterpret_cast<DXGI_OUTDUPL_MOVE_RECT*>(metadata.data());
-    if (FAILED(output->GetFrameMoveRects(static_cast<UINT>(metadata.size()), moves, &size))) return false;
-    const auto move_count = size / sizeof(DXGI_OUTDUPL_MOVE_RECT);
-    for (UINT index = 0; index < move_count; ++index) {
-        if (!inside(moves[index].DestinationRect)) return false;
+    if (SUCCEEDED(output->GetFrameMoveRects(static_cast<UINT>(metadata.size()), moves, &size))) {
+        for (UINT index = 0; index < size / sizeof(DXGI_OUTDUPL_MOVE_RECT); ++index) add(moves[index].DestinationRect);
     }
     const auto dirty = reinterpret_cast<RECT*>(metadata.data());
-    if (FAILED(output->GetFrameDirtyRects(static_cast<UINT>(metadata.size()), dirty, &size))) return false;
-    const auto dirty_count = size / sizeof(RECT);
-    for (UINT index = 0; index < dirty_count; ++index) {
-        if (!inside(dirty[index])) return false;
+    if (SUCCEEDED(output->GetFrameDirtyRects(static_cast<UINT>(metadata.size()), dirty, &size))) {
+        for (UINT index = 0; index < size / sizeof(RECT); ++index) add(dirty[index]);
     }
-    return move_count + dirty_count > 0;
+    const auto area = static_cast<std::uint64_t>(game.right - game.left) * static_cast<std::uint64_t>(game.bottom - game.top);
+    return covered * 2 >= area;
 }
 
 class FrameCapture final {
@@ -166,8 +168,8 @@ public:
         stop_capture_ = false;
         capture_running_ = true;
         capture_thread_ = std::thread{
-            [this, monitor, duplication = std::move(*duplication)]() mutable {
-                ReadFrames(monitor, std::move(duplication));
+            [this, monitor, process_id, duplication = std::move(*duplication)]() mutable {
+                ReadFrames(monitor, process_id, std::move(duplication));
             }};
         return true;
     }
@@ -285,12 +287,12 @@ private:
         return std::nullopt;
     }
 
-    void ReadFrames(HMONITOR monitor, Duplication duplication) noexcept {
-        // Physical pixels, so the overlay's window rect matches the duplication's dirty rects at any scaling.
+    void ReadFrames(HMONITOR monitor, DWORD process_id, Duplication duplication) noexcept {
+        // Physical pixels, so the game's window rect matches the duplication's dirty rects at any scaling.
         SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         MONITORINFO monitor_info{sizeof(monitor_info)};
         GetMonitorInfoW(monitor, &monitor_info);
-        HWND overlay_window = nullptr;
+        HWND game_window = nullptr;
         std::vector<std::uint8_t> metadata;
         LARGE_INTEGER frequency{};
         QueryPerformanceFrequency(&frequency);
@@ -320,13 +322,15 @@ private:
                 break;
             }
 
-            if (!IsWindow(overlay_window)) overlay_window = FindWindowW(L"OpenReplay.PerformanceOverlay", nullptr);
-            RECT overlay{};
-            if (overlay_window && IsWindowVisible(overlay_window) && GetWindowRect(overlay_window, &overlay)) {
-                OffsetRect(&overlay, -monitor_info.rcMonitor.left, -monitor_info.rcMonitor.top);
+            if (!IsWindow(game_window)) game_window = TargetWindow(process_id);
+            RECT game{};
+            if (game_window && !IsIconic(game_window) && GetClientRect(game_window, &game)) {
+                MapWindowPoints(game_window, nullptr, reinterpret_cast<POINT*>(&game), 2);
+                IntersectRect(&game, &game, &monitor_info.rcMonitor);
+                OffsetRect(&game, -monitor_info.rcMonitor.left, -monitor_info.rcMonitor.top);
             }
             if (frame.LastPresentTime.QuadPart > 0 && frequency.QuadPart > 0 &&
-                !OverlayOnlyUpdate(duplication.output.get(), frame, overlay, metadata)) {
+                GameFrame(duplication.output.get(), frame, game, metadata)) {
                 const auto timestamp = frame.LastPresentTime.QuadPart;
                 if (last_timestamp && timestamp > *last_timestamp) {
                     const auto accumulated = std::max(1U, frame.AccumulatedFrames);

@@ -48,7 +48,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $windowsAppSdk 'NOTICE.txt')) -or
 }
 Copy-Item -LiteralPath (Join-Path $repository 'LICENSE') -Destination (Join-Path $licenses 'OpenReplay-GPL-2.0-or-later.txt')
 Copy-Item -LiteralPath (Join-Path $repository 'THIRD-PARTY-NOTICES.md') -Destination $licenses
-Copy-Item -LiteralPath (Join-Path $repository 'src\App\Assets\PublicSans-OFL.txt') -Destination $licenses
+Copy-Item -LiteralPath (Join-Path $repository 'src\App\Assets\SpaceGrotesk-OFL.txt') -Destination $licenses
+Copy-Item -LiteralPath (Join-Path $repository 'src\App\Assets\Rubik-OFL.txt') -Destination $licenses
 Copy-Item -LiteralPath (Join-Path $windowsAppSdk 'NOTICE.txt') -Destination (Join-Path $licenses 'WindowsAppSDK-NOTICE.txt')
 Copy-Item -LiteralPath (Join-Path $windowsAppSdk 'license.txt') -Destination (Join-Path $licenses 'WindowsAppSDK-LICENSE.txt')
 Copy-Item -LiteralPath (Join-Path $cppWinRt 'LICENSE') -Destination (Join-Path $licenses 'CppWinRT-LICENSE.txt')
@@ -77,7 +78,8 @@ $required = @(
     'obs-runtime\obs-plugins\64bit\win-capture.dll',
     'obs-runtime\obs-plugins\64bit\win-wasapi.dll',
     'obs-runtime\NOTICE.txt',
-    'Assets\PublicSans-Variable.ttf'
+    'Assets\SpaceGrotesk-Variable.ttf',
+    'Assets\Rubik-Variable.ttf'
 )
 foreach ($relative in $required) {
     if (-not (Test-Path -LiteralPath (Join-Path $stage $relative))) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "WindowPlacement.h"
 #include "openreplay/Types.h"
 
 #include <windows.h>
@@ -90,6 +91,8 @@ private:
     void StartTelemetry();
     void StopTelemetry() noexcept;
     [[nodiscard]] std::string TelemetryCommand(std::string_view command) const;
+    void TrackGameWindow();
+    [[nodiscard]] MonitorArea FollowedArea() const noexcept;
     void PositionWindow();
     void Paint(HDC dc, const RECT& bounds);
     [[nodiscard]] int ContentHeight() const noexcept;
@@ -98,6 +101,7 @@ private:
     HWND window_{nullptr};
     bool visible_{false};
     HWND topmost_rival_{nullptr};
+    HWND game_window_{nullptr};
     int topmost_raises_{0};
     bool english_{false};
     Settings settings_{};

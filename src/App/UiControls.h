@@ -41,7 +41,7 @@ struct SliderControl {
 
 [[nodiscard]] BrushType Brush(std::uint32_t argb);
 [[nodiscard]] UiTheme DarkTheme();
-[[nodiscard]] winrt::Microsoft::UI::Xaml::Media::FontFamily PublicSans();
+[[nodiscard]] winrt::Microsoft::UI::Xaml::Media::FontFamily AppFont();
 [[nodiscard]] winrt::Microsoft::UI::Xaml::Controls::TextBlock Text(
     std::wstring_view value, double size,
     winrt::Microsoft::UI::Xaml::Media::Brush const& foreground);
@@ -59,6 +59,10 @@ void AddColumn(winrt::Microsoft::UI::Xaml::Controls::Grid const& grid, double va
 [[nodiscard]] std::wstring ClipDay(std::filesystem::file_time_type written, bool english);
 // "20:41" in local time.
 [[nodiscard]] std::wstring ClipClock(std::filesystem::file_time_type written);
+// "00:15", or "01:02:03" past an hour.
+[[nodiscard]] std::wstring DurationText(std::chrono::milliseconds duration);
+// "Crossout · 17 MB": the non-empty parts joined with a middle dot.
+[[nodiscard]] std::wstring JoinDetails(std::initializer_list<std::wstring> parts);
 
 class ControlFactory {
 public:

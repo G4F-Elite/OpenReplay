@@ -9,12 +9,17 @@ Notable user-facing changes are documented here. Development builds use the
 
 - Showed a found update in its own card in Settings, with the download and release-notes buttons side by side.
 - Opened the clip library on the newest clip, so the player and Copy button are ready right away.
+- Redesigned notifications: cards slide in from the screen edge, show a thumbnail of the saved clip or screenshot with its length, game and size, and drain a colored timer bar before sliding away. They no longer take clicks from the game.
+- Switched the interface font to Space Grotesk, with Rubik for Russian text, and made the text a step bolder.
 
 ### Fixed
 
 - Stopped a blank window from appearing after OpenReplay starts in the background, which only Alt+Z could dismiss.
+- Stopped Discord's overlay and other windows drawn over a game from adding frames to the FPS counter.
+- Kept the performance overlay and its FPS on the fullscreen game after alt-tabbing to another window or monitor.
 - Centered the Copy label when no clip is selected.
 - Showed recent clips on Home when OpenReplay starts with the panel open.
+- Stopped "no audio signal" from flashing red during short pauses in speech; it now waits for 10 seconds of silence.
 
 ## [0.2.0] - 2026-10-27
 

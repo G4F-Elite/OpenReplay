@@ -90,6 +90,7 @@
     <ClInclude Include="pch.h" />
     <ClInclude Include="ClipLibraryWindow.xaml.h"><DependentUpon>ClipLibraryWindow.xaml</DependentUpon></ClInclude>
     <ClInclude Include="DiscordShareService.h" />
+    <ClInclude Include="GdiFonts.h" />
     <ClInclude Include="PerformanceOverlay.h" />
     <ClInclude Include="StartupTrace.h" />
     <ClInclude Include="UiControls.h" />
@@ -102,6 +103,7 @@
     <ClCompile Include="pch.cpp"><PrecompiledHeader>Create</PrecompiledHeader></ClCompile>
     <ClCompile Include="ClipLibraryWindow.xaml.cpp"><DependentUpon>ClipLibraryWindow.xaml</DependentUpon></ClCompile>
     <ClCompile Include="DiscordShareService.cpp" />
+    <ClCompile Include="GdiFonts.cpp" />
     <ClCompile Include="PerformanceOverlay.cpp" />
     <ClCompile Include="StartupTrace.cpp" />
     <ClCompile Include="UiControls.cpp" />
@@ -116,8 +118,10 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="HybridCRT.props" />
-    <OpenReplayAsset Include="Assets\PublicSans-Variable.ttf" />
-    <OpenReplayAsset Include="Assets\PublicSans-OFL.txt" />
+    <OpenReplayAsset Include="Assets\SpaceGrotesk-Variable.ttf" />
+    <OpenReplayAsset Include="Assets\SpaceGrotesk-OFL.txt" />
+    <OpenReplayAsset Include="Assets\Rubik-Variable.ttf" />
+    <OpenReplayAsset Include="Assets\Rubik-OFL.txt" />
     <ApplicationDefinition Include="App.xaml" />
     <Page Include="MainWindow.xaml" />
     <Page Include="ClipLibraryWindow.xaml" />

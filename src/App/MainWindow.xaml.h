@@ -56,39 +56,53 @@ struct MainWindow : MainWindowT<MainWindow> {
     void TestDiscordWebhook_Click(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
 
 private:
+    // Each channel but General keeps one card: a newer notification of the same kind replaces it in place.
     enum class NotificationChannel {
         General,
         ReplaySave,
+        Recording,
+        Screenshot,
         DiscordShare,
+        Disk,
         Update,
     };
 
     struct DesktopNotification {
+        DesktopNotification() = default;
+        DesktopNotification(const DesktopNotification&) = delete;
+        DesktopNotification& operator=(const DesktopNotification&) = delete;
+        ~DesktopNotification() {
+            if (thumbnail) DeleteObject(thumbnail);
+        }
+
         MainWindow* owner{};
         HWND window{};
         NotificationChannel channel{NotificationChannel::General};
+        std::wstring tag;
+        COLORREF accent{};
         std::wstring title;
         std::wstring message;
         std::filesystem::path output;
-        bool error{false};
-        bool progress{false};
-        bool shareable{false};
-        bool entering{true};
-        bool animating{false};
+        std::wstring badge;
+        HBITMAP thumbnail{};
+        WPARAM thumbnail_request{};
+        bool live{false};
+        bool placed{false};
         bool hiding{false};
-        bool hide_timer_started{false};
-        bool rounded_by_dwm{false};
+        int media_width{};
+        UINT life_ms{};
         UINT dpi{};
-        int start_x{};
-        int start_y{};
-        int target_x{};
-        int target_y{};
-        int hidden_x{};
         int width{};
         int height{};
-        UINT display_ms{};
-        UINT animation_duration_ms{180};
-        std::chrono::steady_clock::time_point animation_started{};
+        int x{};
+        int edge{};
+        int from_y{};
+        int to_y{};
+        std::chrono::steady_clock::time_point entered{};
+        std::chrono::steady_clock::time_point shown{};
+        std::chrono::steady_clock::time_point moved{};
+        std::chrono::steady_clock::time_point hidden{};
+        std::chrono::steady_clock::time_point thumbnail_loaded{};
     };
 
     struct AudioLevelIndicator {
@@ -143,6 +157,8 @@ private:
     void ToggleRecording();
     void TakeScreenshot();
     winrt::fire_and_forget TakeScreenshotAsync();
+    winrt::fire_and_forget ShowWhenMediaReadyAsync(std::filesystem::path path,
+                                                   std::function<void(std::optional<std::uint64_t>)> show);
     void CompleteScreenshot(openreplay::Response response);
     void ApplyLanguage();
     void UpdateQualityDescription();
@@ -183,21 +199,17 @@ private:
     void ShowNotification(std::wstring_view message, bool error = false);
     void ShowToast(std::wstring_view title, std::wstring_view message, bool error, bool progress,
                     bool auto_hide, const std::filesystem::path& output = {},
-                    NotificationChannel channel = NotificationChannel::General,
-                    bool shareable = false);
+                    NotificationChannel channel = NotificationChannel::General);
     void InitializeNotificationWindow();
     void ShowDesktopNotification(std::wstring_view title, std::wstring_view message, bool error,
                                    bool progress, bool auto_hide, const std::filesystem::path& output,
-                                   NotificationChannel channel, bool shareable);
+                                   NotificationChannel channel);
     void LayoutNotifications();
-    void StartNotificationAnimation(DesktopNotification& notification, int target_x, int target_y,
-                                    bool hiding, UINT duration_ms);
+    void RenderNotification(DesktopNotification& notification);
     void DismissNotification(DesktopNotification& notification);
     void DismissNotificationChannel(NotificationChannel channel);
     void RemoveNotification(HWND window);
-    void OpenNotificationOutput(const DesktopNotification& notification);
-    void CopyNotificationOutput(const DesktopNotification& notification);
-    void ShareNotificationOutput(const DesktopNotification& notification, bool webhook);
+    [[nodiscard]] std::wstring ForegroundGameName() const;
     void TogglePerformanceOverlay();
     void AddTrayIcon();
     void RemoveTrayIcon();
@@ -206,6 +218,10 @@ private:
 
     static BOOL CALLBACK MonitorCallback(HMONITOR monitor, HDC, LPRECT, LPARAM context);
     static LRESULT CALLBACK NotificationWindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
+    static void PaintNotification(HDC dc, std::uint8_t* pixels, const DesktopNotification& notification,
+                                  std::chrono::steady_clock::time_point now);
+    [[nodiscard]] static int NotificationY(const DesktopNotification& notification,
+                                           std::chrono::steady_clock::time_point now);
     static LRESULT CALLBACK WindowSubclass(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
                                            UINT_PTR subclass_id, DWORD_PTR context);
 
@@ -286,6 +302,7 @@ private:
     int host_poll_failures_{0};
     std::uint64_t replay_save_revision_{0};
     std::chrono::steady_clock::time_point last_host_launch_attempt_{};
+    std::chrono::steady_clock::time_point last_audio_signal_{};
     std::chrono::steady_clock::time_point last_storage_update_{};
     std::chrono::steady_clock::time_point replay_running_since_{};
     RECT overlay_bounds_{};
@@ -486,7 +503,6 @@ private:
     bool clip_fullscreen_hid_overlay_{false};
     bool clip_fullscreen_hid_performance_{false};
     bool notification_class_registered_{false};
-    bool private_font_loaded_{false};
 };
 
 }  // namespace winrt::OpenReplay::implementation

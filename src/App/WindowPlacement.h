@@ -13,6 +13,7 @@ struct MonitorArea {
 };
 
 [[nodiscard]] MonitorArea ForegroundMonitorArea(HWND fallback_window = nullptr) noexcept;
+[[nodiscard]] MonitorArea WindowMonitorArea(HWND window) noexcept;
 [[nodiscard]] bool IsFullscreenWindow(HWND window) noexcept;
 [[nodiscard]] UINT WindowDpi(HWND window) noexcept;
 [[nodiscard]] UINT MonitorDpi(HMONITOR monitor) noexcept;

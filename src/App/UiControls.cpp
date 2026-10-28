@@ -86,8 +86,10 @@ UiTheme DarkTheme() {
     };
 }
 
-FontFamily PublicSans() {
-    return FontFamily{L"ms-appx:///Assets/PublicSans-Variable.ttf#Public Sans"};
+// Space Grotesk has no Cyrillic, so Russian text falls through to Rubik.
+FontFamily AppFont() {
+    return FontFamily{L"ms-appx:///Assets/SpaceGrotesk-Variable.ttf#Space Grotesk, "
+                      L"ms-appx:///Assets/Rubik-Variable.ttf#Rubik"};
 }
 
 TextBlock Text(std::wstring_view value, double size,
@@ -95,7 +97,8 @@ TextBlock Text(std::wstring_view value, double size,
     TextBlock text;
     text.Text(winrt::hstring{value});
     text.FontSize(size);
-    text.FontFamily(PublicSans());
+    text.FontFamily(AppFont());
+    text.FontWeight(winrt::Windows::UI::Text::FontWeights::Medium());
     text.Foreground(foreground);
     return text;
 }
@@ -121,10 +124,10 @@ Button ControlFactory::ActionButton(std::wstring_view label, ButtonKind kind) co
     button.Foreground(kind == ButtonKind::Accent ? theme_.accent_text : theme_.primary_text);
     button.BorderBrush(kind == ButtonKind::Accent ? theme_.accent : theme_.control_border);
     button.BorderThickness(Thickness{1, 1, 1, 1});
-    button.FontFamily(PublicSans());
+    button.FontFamily(AppFont());
     button.FontSize(12.5);
-    button.FontWeight(kind == ButtonKind::Accent ? winrt::Windows::UI::Text::FontWeights::SemiBold()
-                                                 : winrt::Windows::UI::Text::FontWeights::Normal());
+    button.FontWeight(kind == ButtonKind::Accent ? winrt::Windows::UI::Text::FontWeights::Bold()
+                                                 : winrt::Windows::UI::Text::FontWeights::Medium());
     button.MinHeight(34);
     button.Padding(Thickness{14, 6, 14, 6});
     button.CornerRadius(CornerRadius{8, 8, 8, 8});
@@ -149,7 +152,8 @@ Button ControlFactory::IconButton(std::wstring_view glyph, std::wstring_view too
 
 ToggleSwitch ControlFactory::Toggle() const {
     ToggleSwitch toggle;
-    toggle.FontFamily(PublicSans());
+    toggle.FontFamily(AppFont());
+    toggle.FontWeight(winrt::Windows::UI::Text::FontWeights::Medium());
     toggle.Width(40);
     toggle.MinWidth(40);
     toggle.Height(20);
@@ -177,7 +181,8 @@ ToggleSwitch ControlFactory::Toggle() const {
 }
 
 void ControlFactory::StyleInput(Control const& control, double height) const {
-    control.FontFamily(PublicSans());
+    control.FontFamily(AppFont());
+    control.FontWeight(winrt::Windows::UI::Text::FontWeights::Medium());
     control.FontSize(13);
     control.Height(height);
     control.MinHeight(height);
@@ -213,7 +218,8 @@ ComboBox ControlFactory::Select() const {
 ComboBoxItem ControlFactory::Option(std::wstring_view label) const {
     ComboBoxItem option;
     option.Content(winrt::box_value(winrt::hstring{label}));
-    option.FontFamily(PublicSans());
+    option.FontFamily(AppFont());
+    option.FontWeight(winrt::Windows::UI::Text::FontWeights::Medium());
     option.FontSize(13);
     option.MinHeight(36);
     option.Padding(Thickness{12, 0, 12, 0});
@@ -327,7 +333,8 @@ SliderControl ControlFactory::RangeSlider(double minimum, double maximum, double
 CheckBox ControlFactory::Check(std::wstring_view label, bool checked, double font_size) const {
     CheckBox check;
     check.Content(winrt::box_value(winrt::hstring{label}));
-    check.FontFamily(PublicSans());
+    check.FontFamily(AppFont());
+    check.FontWeight(winrt::Windows::UI::Text::FontWeights::Medium());
     check.FontSize(font_size);
     check.IsChecked(checked);
     check.VerticalContentAlignment(VerticalAlignment::Center);
@@ -414,6 +421,24 @@ std::wstring ClipDay(std::filesystem::file_time_type written, bool english) {
 std::wstring ClipClock(std::filesystem::file_time_type written) {
     const auto clip = LocalTime(written);
     return std::format(L"{:02}:{:02}", clip.tm_hour, clip.tm_min);
+}
+
+std::wstring DurationText(std::chrono::milliseconds duration) {
+    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(duration).count();
+    if (seconds >= 3600) {
+        return std::format(L"{:02}:{:02}:{:02}", seconds / 3600, seconds / 60 % 60, seconds % 60);
+    }
+    return std::format(L"{:02}:{:02}", seconds / 60, seconds % 60);
+}
+
+std::wstring JoinDetails(std::initializer_list<std::wstring> parts) {
+    std::wstring result;
+    for (const auto& part : parts) {
+        if (part.empty()) continue;
+        if (!result.empty()) result += L" · ";
+        result += part;
+    }
+    return result;
 }
 
 }  // namespace openreplay::ui

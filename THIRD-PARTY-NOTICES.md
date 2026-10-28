@@ -9,6 +9,7 @@ OpenReplay distributes components from the following projects. Their license fil
 - SRT, Mozilla Public License 2.0: https://github.com/Haivision/srt
 - curl, curl license: https://curl.se/docs/copyright.html
 - Microsoft Windows App SDK and C++/WinRT, licenses included with their NuGet packages
-- Public Sans, SIL Open Font License 1.1, included at `src/App/Assets/PublicSans-OFL.txt`
+- Space Grotesk, SIL Open Font License 1.1, included at `src/App/Assets/SpaceGrotesk-OFL.txt`
+- Rubik, SIL Open Font License 1.1, included at `src/App/Assets/Rubik-OFL.txt`
 
 OpenReplay does not install OBS Studio. The verified runtime subset is bundled only to provide libobs capture, encoding, and muxing functionality.

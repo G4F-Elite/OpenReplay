@@ -84,16 +84,19 @@ RECT AvailableBounds(const RECT& monitor_bounds, const TaskbarSearch& taskbar) n
 }  // namespace
 
 MonitorArea ForegroundMonitorArea(HWND fallback_window) noexcept {
-    auto foreground = GetForegroundWindow();
-    if (!foreground) foreground = fallback_window;
-    auto monitor = MonitorFromWindow(foreground, MONITOR_DEFAULTTOPRIMARY);
+    const auto foreground = GetForegroundWindow();
+    return WindowMonitorArea(foreground ? foreground : fallback_window);
+}
+
+MonitorArea WindowMonitorArea(HWND window) noexcept {
+    auto monitor = MonitorFromWindow(window, MONITOR_DEFAULTTOPRIMARY);
     MONITORINFO info{sizeof(info)};
     if (!GetMonitorInfoW(monitor, &info)) return {};
 
     MonitorArea result;
     result.monitor = monitor;
-    result.desktop = IsDesktopWindow(foreground);
-    result.fullscreen = CoversMonitor(foreground, info.rcMonitor);
+    result.desktop = IsDesktopWindow(window);
+    result.fullscreen = CoversMonitor(window, info.rcMonitor);
     TaskbarSearch taskbar{monitor, info.rcMonitor};
     EnumWindows(FindVisibleTaskbar, reinterpret_cast<LPARAM>(&taskbar));
     result.taskbar_visible = taskbar.visible;
